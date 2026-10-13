@@ -1,0 +1,30 @@
+{
+  // Copy this file to settings.json for a consistent local workspace.
+  "files.eol": "\n",
+  "files.trimTrailingWhitespace": true,
+  "files.insertFinalNewline": true,
+  "editor.tabSize": 2,
+  "editor.insertSpaces": true,
+  "editor.rulers": [100],
+  "files.exclude": {
+    "**/node_modules": true,
+    "**/logs": true,
+    "**/.wrangler": true
+  },
+  "search.exclude": {
+    "**/node_modules": true,
+    "**/logs": true,
+    "package-lock.json": true
+  },
+  "files.associations": {
+    "*.sql": "sql",
+    ".env.example": "properties"
+  },
+  "javascript.validate.enable": true,
+  "json.schemas": [
+    {
+      "fileMatch": ["wrangler.toml"],
+      "url": "https://raw.githubusercontent.com/cloudflare/workers-sdk/main/packages/wrangler/config-schema.json"
+    }
+  ]
+}

@@ -1,0 +1,11 @@
+# ============================================================================
+# Local development secrets for "wrangler dev".
+#
+# Copy this file to ".dev.vars" (already gitignored) and fill in real values.
+# In production these live as encrypted Worker secrets, never in wrangler.toml:
+#   npx wrangler secret put WORKER_AUTH_TOKEN
+# ============================================================================
+
+# Shared bearer token the bot presents on every request. Generate a long
+# random value, for example: openssl rand -hex 32
+WORKER_AUTH_TOKEN=replace-with-a-long-random-value-that-matches-the-bot

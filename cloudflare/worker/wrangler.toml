@@ -1,0 +1,57 @@
+# ============================================================================
+# Cloudflare Worker configuration - moderation gateway
+#
+# Replace every placeholder marked REPLACE_ME before deploying. None of these
+# values are secrets: the shared bearer token is set separately with
+#   npx wrangler secret put WORKER_AUTH_TOKEN
+# so it never lands in this file or in version control.
+# ============================================================================
+
+name = "moderation-gateway"
+main = "src/index.js"
+compatibility_date = "2024-11-01"
+workers_dev = true
+
+# ----------------------------------------------------------------------------
+# D1 database binding. Create the database first:
+#   npx wrangler d1 create moderation-bot
+# then paste the printed database_id below.
+# ----------------------------------------------------------------------------
+[[d1_databases]]
+binding = "DB"
+database_name = "moderation-bot"
+database_id = "REPLACE_ME_WITH_D1_DATABASE_ID"
+
+# ----------------------------------------------------------------------------
+# Optional KV namespace used for two things:
+#   1. Short-lived caching of guild configuration documents.
+#   2. Per-client rate limiting of gateway requests.
+# If the binding is absent the worker simply skips both and calls D1 directly.
+# Create with: npx wrangler kv namespace create MODERATION_KV
+# ----------------------------------------------------------------------------
+# [[kv_namespaces]]
+# binding = "KV"
+# id = "REPLACE_ME_WITH_KV_NAMESPACE_ID"
+
+[vars]
+# Requests allowed per client per minute before the gateway returns HTTP 429.
+RATE_LIMIT_PER_MINUTE = "600"
+# Guild configuration cache lifetime in KV, in seconds. 0 disables caching.
+CONFIG_CACHE_SECONDS = "60"
+# Maximum accepted request body size in bytes.
+MAX_BODY_BYTES = "262144"
+
+# ----------------------------------------------------------------------------
+# Observability. Enable Workers Logs so failures can be inspected in the
+# Cloudflare dashboard. Secrets are never written to logs by the worker code.
+# ----------------------------------------------------------------------------
+[observability]
+enabled = true
+head_sampling_rate = 1
+
+# ----------------------------------------------------------------------------
+# Optional: restrict the gateway to a custom domain instead of workers.dev.
+# ----------------------------------------------------------------------------
+# [routes]
+# pattern = "moderation-gateway.example.com"
+# custom_domain = true

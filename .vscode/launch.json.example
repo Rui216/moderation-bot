@@ -1,0 +1,35 @@
+{
+  // Copy this file to launch.json to debug locally in VS Code.
+  // Secrets are read from the .env file by the application itself, so no token
+  // ever appears in this configuration.
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Bot (loads .env)",
+      "type": "node",
+      "request": "launch",
+      "program": "${workspaceFolder}/src/index.js",
+      "cwd": "${workspaceFolder}",
+      "envFile": "${workspaceFolder}/.env",
+      "console": "integratedTerminal",
+      "skipFiles": ["<node_internals>/**"],
+      "restart": true
+    },
+    {
+      "name": "Self test",
+      "type": "node",
+      "request": "launch",
+      "program": "${workspaceFolder}/scripts/self-test.js",
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal"
+    },
+    {
+      "name": "Integration test",
+      "type": "node",
+      "request": "launch",
+      "program": "${workspaceFolder}/scripts/integration-test.js",
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal"
+    }
+  ]
+}

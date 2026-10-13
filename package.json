@@ -1,0 +1,37 @@
+{
+  "name": "moderation-bot",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Production-ready Discord moderation bot (discord.js v14) with Cloudflare D1 storage behind a Worker API gateway.",
+  "license": "MIT",
+  "type": "commonjs",
+  "main": "src/index.js",
+  "engines": {
+    "node": ">=20.18.0"
+  },
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node --watch src/index.js",
+    "check": "node scripts/syntax-check.js",
+    "selftest": "node scripts/self-test.js",
+    "verify": "npm run check && npm run selftest && npm run test:integration",
+    "deploy:worker": "cd cloudflare/worker && npx wrangler deploy",
+    "db:schema:local": "cd cloudflare/worker && npx wrangler d1 execute moderation --local --file=../schema.sql",
+    "db:schema:remote": "cd cloudflare/worker && npx wrangler d1 execute moderation --remote --file=../schema.sql",
+    "worker:dev": "cd cloudflare/worker && npx wrangler dev",
+    "worker:logs": "cd cloudflare/worker && npx wrangler tail",
+    "test:integration": "node scripts/integration-test.js"
+  },
+  "dependencies": {
+    "discord.js": "^14.27.0",
+    "dotenv": "^18.0.7"
+  },
+  "keywords": [
+    "discord",
+    "discord.js",
+    "moderation",
+    "cloudflare",
+    "d1",
+    "bot"
+  ]
+}
