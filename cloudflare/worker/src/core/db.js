@@ -17,8 +17,27 @@ export class StorageError extends Error {
   }
 }
 
+/**
+ * Assert that a helper received a D1 binding rather than an `env` wrapper.
+ *
+ * Passing `env` instead of `env.DB` is an easy mistake to make and produces a
+ * confusing "db.prepare is not a function" later on. Failing here instead keeps
+ * the cause obvious.
+ */
+function requireDb(db) {
+  if (!db || typeof db.prepare !== 'function') {
+    const looksLikeEnv = Boolean(db && typeof db === 'object' && db.DB);
+    throw new StorageError(
+      looksLikeEnv
+        ? 'Received an env object where a D1 binding was expected; pass env.DB'
+        : 'D1 binding is missing or malformed',
+    );
+  }
+}
+
 /** Run a statement that returns rows. */
 export async function all(db, sql, params = []) {
+  requireDb(db);
   try {
     const result = await db.prepare(sql).bind(...params).all();
     return result.results || [];
@@ -29,6 +48,7 @@ export async function all(db, sql, params = []) {
 
 /** Run a statement and return the first row or null. */
 export async function first(db, sql, params = []) {
+  requireDb(db);
   try {
     const result = await db.prepare(sql).bind(...params).first();
     return result || null;
@@ -39,6 +59,7 @@ export async function first(db, sql, params = []) {
 
 /** Run a write statement and return its metadata. */
 export async function run(db, sql, params = []) {
+  requireDb(db);
   try {
     const result = await db.prepare(sql).bind(...params).run();
     return result.meta || {};
@@ -53,6 +74,7 @@ export async function run(db, sql, params = []) {
  * fallback query in case the driver omits it.
  */
 export async function insertReturningId(db, sql, params = []) {
+  requireDb(db);
   const meta = await run(db, sql, params);
   if (meta && Number.isFinite(meta.last_row_id) && meta.last_row_id > 0) {
     return meta.last_row_id;
@@ -63,6 +85,7 @@ export async function insertReturningId(db, sql, params = []) {
 
 /** Execute several prepared statements in a single D1 batch (transacted). */
 export async function batch(db, statements) {
+  requireDb(db);
   if (!statements.length) return [];
   try {
     return await db.batch(statements);
@@ -76,6 +99,7 @@ export async function batch(db, statements) {
  * The upsert with RETURNING makes concurrent allocations impossible to collide.
  */
 export async function nextCounter(db, guildId, counter) {
+  requireDb(db);
   const row = await first(
     db,
     `INSERT INTO guild_counters (guild_id, counter, last_value)

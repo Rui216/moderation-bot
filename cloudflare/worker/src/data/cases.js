@@ -89,7 +89,7 @@ export async function createCase(env, guildId, input) {
   const metadata = toJsonColumn(input.metadata || {});
   const now = nowMs();
 
-  const caseNumber = await nextCounter(env, guildId, 'case');
+  const caseNumber = await nextCounter(env.DB, guildId, 'case');
 
   // Optional warning row. Its id is stored on the case, and the case number is
   // stored on the warning, so either can be resolved from the other.

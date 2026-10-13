@@ -252,6 +252,33 @@ async function main() {
             bind(...params) {
               return {
                 async first() {
+                  // Counter allocation: INSERT ... RETURNING last_value.
+                  if (/INSERT INTO guild_counters/i.test(sql) && /RETURNING last_value/i.test(sql)) {
+                    return { last_value: 1 };
+                  }
+                  // Case read-back after a batch write.
+                  if (/FROM cases WHERE guild_id = \?1 AND case_number = \?2/i.test(sql)) {
+                    return {
+                      id: 1,
+                      guild_id: params[0],
+                      case_number: params[1],
+                      action: 'ban',
+                      status: 'active',
+                      target_id: '444444444444444444',
+                      moderator_id: '555555555555555555',
+                      reason: 'test reason',
+                      evidence_url: null,
+                      duration_ms: null,
+                      expires_at: null,
+                      warning_id: null,
+                      channel_id: null,
+                      metadata: '{}',
+                      reversed_at: null,
+                      reversed_by: null,
+                      created_at: 1,
+                      updated_at: 1,
+                    };
+                  }
                   if (/FROM guilds WHERE guild_id = \?1/i.test(sql) && /created_at/.test(sql)) {
                     return {
                       guild_id: params[0],
@@ -343,6 +370,34 @@ async function main() {
       body: '{}',
     });
     check('missing content type is rejected', missingContentType.status === 400);
+
+    // A valid create must reach the database layer and succeed. This is the
+    // path every moderation command takes: without it, a broken SQL helper
+    // signature slips through as a 500 that only shows up in production.
+    const created = await call('v1/guilds/123456789012345678/cases', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer test-token-value-that-is-long-enough', 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        action: 'ban',
+        targetId: '444444444444444444',
+        moderatorId: '555555555555555555',
+        reason: 'self test',
+      }),
+    });
+    check('valid case creation succeeds', created.status === 201);
+    const createdBody = await created.json();
+    check('created case is returned with a case number', createdBody.ok === true && createdBody.case && createdBody.case.caseNumber === 1);
+
+    // Storage helpers must refuse an env object in place of a D1 binding:
+    // passing `env` where `env.DB` belongs is an easy mistake to make and
+    // would otherwise surface as a confusing failure deep in a command.
+    try {
+      const db = await import(`file://${path.join(ROOT, 'cloudflare/worker/src/core/db.js')}`);
+      await db.first({ DB: {} }, 'SELECT 1');
+      check('storage helper rejects an env object in place of a binding', false, 'no error thrown');
+    } catch (error) {
+      check('storage helper rejects an env object in place of a binding', /env object where a D1 binding/i.test(error && error.message));
+    }
   } catch (error) {
     check('worker module loads', false, error && error.message);
   }
