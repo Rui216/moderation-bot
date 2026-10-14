@@ -237,7 +237,9 @@ function buildSlashArgs(command, interaction) {
  * @param {import('discord.js').ChatInputCommandInteraction} interaction
  */
 async function handleInteraction(deps, interaction) {
-  const { client, appConfig } = deps;
+  const { appConfig } = deps;
+  // The interaction always carries its client, so use it when deps does not.
+  const client = deps.client || interaction.client;
 
   if (!interaction.isChatInputCommand()) return;
   if (!interaction.guild) {
