@@ -14,6 +14,7 @@ const { AuditLogEvent } = require('discord.js');
 const { cleanText } = require('../utils/sanitize');
 const { repo } = require('../db');
 const loggingService = require('../services/loggingService');
+const automodService = require('../automod/automodService');
 const { logger } = require('../utils/logger');
 
 const log = logger.child('events');
@@ -126,11 +127,17 @@ async function handleUpdate(client, before, after) {
     const guild = after.guild || before.guild;
     if (!guild) return;
 
+    if (after.partial) after = await after.fetch();
     if (!before.content && !after.content) return;
     if (before.content === after.content) return;
 
     const config = await loadConfig(guild.id);
     if (!config) return;
+
+    if (after.author && !after.author.bot) {
+      const automod = await repo('guilds').getAutomod(guild.id);
+      await automodService.handleMessage(after, { config, automod, appConfig: client.appConfig });
+    }
 
     await loggingService.emit(guild, 'message_edit', {
       title: 'Message Edited',

@@ -6,8 +6,8 @@
  * claims them, performs the Discord action, and marks the row done. Because the
  * queue lives in D1, a restart on Wispbyte never loses a pending expiry.
  *
- * Claiming is a single UPDATE ... RETURNING statement, so two bot instances
- * cannot execute the same task.
+ * Claiming is atomic. Stale leases are retried, so execution is at-least-once;
+ * Discord operations must tolerate retries, not assume exactly-once delivery.
  */
 
 import { all, first, run, insertReturningId, StorageError } from '../core/db.js';
@@ -128,8 +128,8 @@ export async function completeTask(env, guildId, taskId, status, lastError = nul
   const meta = await run(
     env.DB,
     `UPDATE scheduled_tasks
-     SET status = ?1, last_error = ?2, completed_at = CASE WHEN ?1 IN ('done', 'cancelled') THEN ?3 ELSE completed_at END, updated_at = ?3
-     WHERE id = ?4 AND guild_id = ?5`,
+     SET status = ?1, last_error = ?2, completed_at = CASE WHEN ?1 IN ('done', 'cancelled') THEN ?3 ELSE completed_at END, run_at = CASE WHEN ?1 = 'pending' THEN ?3 + 30000 ELSE run_at END, updated_at = ?3
+     WHERE id = ?4 AND guild_id = ?5 AND status = 'running'`,
     [finalStatus, lastError ? text(lastError, 300) : null, now, taskId, guildId],
   );
 
@@ -154,6 +154,11 @@ export async function cancelTasks(env, guildId, input = {}) {
   if (input.taskId) {
     params.push(int(input.taskId, { min: 1 }));
     sql += ` AND id = ?${params.length}`;
+  }
+
+  if (input.roleId) {
+    params.push(requireSnowflake(input.roleId, 'roleId'));
+    sql += ` AND json_extract(payload, '$.roleId') = ?${params.length}`;
   }
 
   const meta = await run(env.DB, sql, params);

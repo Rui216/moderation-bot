@@ -21,7 +21,7 @@
 
 const { ACTIONS, MESSAGES, TASK_TYPES } = require('../config/constants');
 const { moderationEmbed } = require('../utils/embeds');
-const { ValidationError, DiscordActionError, HierarchyError, safeErrorMessage } = require('../utils/errors');
+const { UserError, ValidationError, DiscordActionError, HierarchyError, safeErrorMessage } = require('../utils/errors');
 const { sanitizeReason } = require('../utils/sanitize');
 const { formatDuration, formatAbsolute } = require('../utils/duration');
 const { logger } = require('../utils/logger');
@@ -177,6 +177,9 @@ async function applyAction(options) {
       code: error && error.code,
       message: error && error.message,
     });
+    if (typeof perform === 'function') {
+      throw new UserError('The Discord action was applied, but its case and any automatic expiry could not be saved. Do not blindly repeat the command. Check the member and restore storage; temporary bans or roles may need to be reversed manually.', { code: 'ACTION_APPLIED_STORAGE_FAILED' });
+    }
     throw error;
   }
 

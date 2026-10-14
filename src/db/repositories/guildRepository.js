@@ -17,6 +17,21 @@ const { deepMerge, deepClone } = require('../../utils/objects');
 const { logger } = require('../../utils/logger');
 
 const log = logger.child('config');
+const { createKeyedQueue } = require('../../utils/keyedQueue');
+const mutateQueue = createKeyedQueue();
+
+/** Serialize extensible state edits across tickets and nickname locks. */
+async function mutateMisc(guildId, mutate) {
+  return mutateQueue(guildId, async () => {
+    const config = await getConfig(guildId, { force: true });
+    const misc = await mutate(deepClone(config.misc || {}));
+    if (Buffer.byteLength(JSON.stringify(misc), 'utf8') > 16384) {
+      const { ValidationError } = require('../../utils/errors');
+      throw new ValidationError('Server state is full. Close unused tickets or remove unused nickname locks first.');
+    }
+    return updateConfig(guildId, { misc });
+  });
+}
 
 /** Milliseconds a configuration document stays cached in memory. */
 const CACHE_TTL_MS = 60 * 1000;
@@ -241,6 +256,7 @@ function cacheStats() {
 
 module.exports = {
   attach,
+  mutateMisc,
   getConfig,
   updateConfig,
   getAutomod,

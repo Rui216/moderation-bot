@@ -3,11 +3,12 @@
  *
  * Creating a case may also create a linked warning row, a punishment state
  * row, and a scheduled expiry task. Those writes are grouped so a partial
- * action cannot be recorded: the warning is inserted first (its row id is
- * referenced by the case), then the remaining rows are written in one D1 batch.
+ * action cannot be recorded: warnings, cases, punishments, and expiry tasks
+ * are written together in a single transactional D1 batch.
  */
 
-import { all, first, insertReturningId, run, batch, nextCounter, StorageError } from '../core/db.js';
+import { all, first, run, batch, nextCounter, StorageError } from '../core/db.js';
+import { TASK_TYPES } from './tasks.js';
 import {
   requireSnowflake,
   optionalSnowflake,
@@ -80,7 +81,7 @@ export async function createCase(env, guildId, input) {
 
   const action = oneOf(input.action, CASE_ACTIONS, 'action');
   const targetId = optionalSnowflake(input.targetId, 'targetId');
-  const moderatorId = input.moderatorId ? optionalSnowflake(input.moderatorId, 'moderatorId') : 'system';
+  const moderatorId = !input.moderatorId || input.moderatorId === 'system' ? 'system' : requireSnowflake(input.moderatorId, 'moderatorId');
   const reason = text(input.reason, 500);
   const evidenceUrl = input.evidenceUrl ? optionalUrl(input.evidenceUrl, 'evidenceUrl') : null;
   const durationMs = int(input.durationMs, { min: 0, max: 315360000000, fallback: null });
@@ -91,28 +92,25 @@ export async function createCase(env, guildId, input) {
 
   const caseNumber = await nextCounter(env.DB, guildId, 'case');
 
-  // Optional warning row. Its id is stored on the case, and the case number is
-  // stored on the warning, so either can be resolved from the other.
-  let warningId = null;
-  if (input.warning && typeof input.warning === 'object' && targetId) {
-    warningId = await insertReturningId(
-      env.DB,
+  // All linked records must be in the SAME D1 transaction. A separately
+  // inserted warning could otherwise survive a failed case/punishment write.
+  const statements = [];
+  const hasWarning = Boolean(input.warning && typeof input.warning === 'object' && targetId);
+  if (hasWarning) {
+    statements.push(env.DB.prepare(
       `INSERT INTO warnings (guild_id, user_id, moderator_id, reason, case_number, active, expires_at, created_at, updated_at)
        VALUES (?1, ?2, ?3, ?4, ?5, 1, ?6, ?7, ?7)`,
-      [guildId, targetId, moderatorId === 'system' ? 'system' : moderatorId, reason, caseNumber,
-        int(input.warning.expiresAt, { min: 0, fallback: null }), now],
-    );
+    ).bind(guildId, targetId, moderatorId, reason, caseNumber,
+      int(input.warning.expiresAt, { min: 0, fallback: null }), now));
   }
-
-  const statements = [];
 
   statements.push(
     env.DB.prepare(
       `INSERT INTO cases (guild_id, case_number, action, status, target_id, moderator_id, reason, evidence_url,
                           duration_ms, expires_at, warning_id, channel_id, metadata, created_at, updated_at)
-       VALUES (?1, ?2, ?3, 'active', ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?13)`,
+       VALUES (?1, ?2, ?3, 'active', ?4, ?5, ?6, ?7, ?8, ?9, CASE WHEN ?10 = 1 THEN (SELECT id FROM warnings WHERE guild_id = ?1 AND case_number = ?2 LIMIT 1) ELSE NULL END, ?11, ?12, ?13, ?13)`,
     ).bind(guildId, caseNumber, action, targetId, moderatorId, reason, evidenceUrl,
-      durationMs, expiresAt, warningId, channelId, metadata, now),
+      durationMs, expiresAt, hasWarning ? 1 : 0, channelId, metadata, now),
   );
 
   // Optional punishment state row (current mute / ban / temporary role).
@@ -144,7 +142,7 @@ export async function createCase(env, guildId, input) {
   // Optional scheduled expiry task.
   let taskId = null;
   if (input.task && typeof input.task === 'object' && Number.isFinite(int(input.task.runAt, { fallback: null }))) {
-    const taskType = text(input.task.type, 32);
+    const taskType = oneOf(input.task.type, TASK_TYPES, 'task.type');
     if (taskType) {
       statements.push(
         env.DB.prepare(
@@ -163,7 +161,7 @@ export async function createCase(env, guildId, input) {
 
   return {
     case: rowToCase(row),
-    warningId,
+    warningId: row?.warning_id || null,
     punishmentId,
     taskId,
     caseNumber,

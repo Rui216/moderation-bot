@@ -7,8 +7,8 @@
  * always the same configuration document regardless of storage layout.
  */
 
-import { all, first, insertReturningId, run, cacheGet, cachePut, cacheDelete, StorageError } from '../core/db.js';
-import { bool, parseJsonColumn, toJsonColumn, snowflakeArray, text, requireSnowflake, int } from '../core/validate.js';
+import { all, first, run, cacheDelete, StorageError } from '../core/db.js';
+import { bool, parseJsonColumn, toJsonColumn, snowflakeArray, text, requireSnowflake, int, ValidationError } from '../core/validate.js';
 
 /** Column list reused by every SELECT so the mapping stays in one place. */
 const GUILD_COLUMNS = `
@@ -46,17 +46,11 @@ export function rowToConfig(row) {
   };
 }
 
-/** Read one guild row, optionally through the KV cache. */
+/** Read authoritative guild state; hot-path caching is handled by the bot. */
 export async function getGuildRow(env, guildId) {
-  const cacheKey = `guild:${guildId}`;
-  const cached = await cacheGet(env, cacheKey);
-  if (cached) return cached;
-
+  // Read authoritative D1 state. KV is eventually consistent and must not feed
+  // read/modify/write ticket and nickname-lock updates.
   const row = await first(env.DB, `SELECT ${GUILD_COLUMNS} FROM guilds WHERE guild_id = ?1`, [guildId]);
-  if (row) {
-    const ttl = int(env.CONFIG_CACHE_SECONDS, { min: 0, max: 3600, fallback: 60 });
-    await cachePut(env, cacheKey, row, ttl);
-  }
   return row;
 }
 
@@ -73,7 +67,7 @@ export async function ensureGuild(env, guildId, guildName = null) {
   if (existing) return;
 
   const now = Date.now();
-  await insertReturningId(
+  await run(
     env.DB,
     `INSERT INTO guilds (guild_id, guild_name, created_at, updated_at)
      VALUES (?1, ?2, ?3, ?3)
@@ -163,7 +157,12 @@ export async function applyConfigPatch(env, guildId, patchInput) {
 function boundedMisc(input) {
   const source = parseJsonColumn(input, {});
   const serialized = JSON.stringify(source);
-  if (serialized.length > 16384) return {};
+  if (!source || typeof source !== 'object' || Array.isArray(source)) {
+    throw new ValidationError('misc must be an object');
+  }
+  if (new TextEncoder().encode(serialized).length > 16384) {
+    throw new ValidationError('misc exceeds the 16 KiB storage limit; no settings were changed');
+  }
   return source;
 }
 

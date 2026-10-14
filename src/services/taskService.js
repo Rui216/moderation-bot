@@ -8,8 +8,8 @@
  * expiry. Because the queue lives in the database, a restart on Wispbyte never
  * loses a pending expiry - the next poll simply picks the row up again.
  *
- * Claiming is atomic on the gateway side, so a task is never executed twice
- * even if a poll overlaps with a slow previous run.
+ * Claims are atomic, but expired leases can be reclaimed after a crash.
+ * Execution is at-least-once; handlers must tolerate repeated expiry attempts.
  */
 
 const { TASK_TYPES, TASK_STATUS } = require('../config/constants');
@@ -18,7 +18,12 @@ const { repo } = require('../db');
 
 const log = logger.child('scheduler');
 
+function missingOnly(code) {
+  return (error) => { if (error.code === code) return null; throw error; };
+}
+
 let timer = null;
+let initialTimer = null;
 let running = false;
 let stopped = true;
 let currentIntervalMs = 30000;
@@ -51,23 +56,36 @@ async function executeTask(task, deps) {
   const guild = client.guilds.cache.get(task.guildId);
   if (!guild) return { status: TASK_STATUS.CANCELLED, error: 'Guild is no longer available' };
 
-  const config = await repo('guilds').getConfig(guild.id).catch(() => null);
+  const config = await repo('guilds').getConfig(guild.id, { force: true });
   const ctx = systemContext(guild, config, limits);
   const payload = task.payload || {};
 
+  const punishmentType = { [TASK_TYPES.UNMUTE]: 'mute', [TASK_TYPES.UNBAN]: 'ban', [TASK_TYPES.REMOVE_ROLE]: 'role' }[task.type];
+  if (punishmentType && task.caseNumber) {
+    const active = await repo('punishments').list(guild.id, task.targetId);
+    const current = active.find((entry) => entry.type === punishmentType
+      && (punishmentType !== 'role' || entry.roleId === payload.roleId));
+    if (!current || (current.caseNumber && current.caseNumber !== task.caseNumber)) {
+      return { status: TASK_STATUS.CANCELLED, error: 'Punishment cleared or superseded by a newer case' };
+    }
+  }
+
   switch (task.type) {
     case TASK_TYPES.UNMUTE: {
-      const member = await guild.members.fetch(task.targetId).catch(() => null);
+      const member = await guild.members.fetch(task.targetId).catch(missingOnly(10007));
       if (!member) {
         await repo('punishments').clear(guild.id, { userId: task.targetId, type: 'mute', clearedBy: null, reason: 'Member left the server' });
         return { status: TASK_STATUS.DONE };
       }
-      if (!member.isCommunicationDisabled || !member.isCommunicationDisabled()) {
+      const muteRoleId = payload.muteRoleId || (config.muteRoleEnabled ? config.mutedRoleId : null);
+      const hasMuteRole = muteRoleId && member.roles.cache.has(muteRoleId);
+      if (!member.isCommunicationDisabled?.() && !hasMuteRole) {
         await repo('punishments').clear(guild.id, { userId: task.targetId, type: 'mute', clearedBy: null, reason: 'Mute already expired' });
         return { status: TASK_STATUS.DONE };
       }
       await client.services.punishmentService.unmute(ctx, member, {
         reason: payload.reason || 'Temporary mute expired',
+        muteRoleId,
         system: true,
         caseNumber: task.caseNumber,
       });
@@ -75,12 +93,8 @@ async function executeTask(task, deps) {
     }
 
     case TASK_TYPES.UNBAN: {
-      const user = await client.users.fetch(task.targetId).catch(() => null);
-      if (!user) {
-        await repo('punishments').clear(guild.id, { userId: task.targetId, type: 'ban', clearedBy: null, reason: 'User could not be resolved' });
-        return { status: TASK_STATUS.DONE };
-      }
-      const banned = await guild.bans.fetch(user.id).catch(() => null);
+      const banned = await guild.bans.fetch(task.targetId).catch(missingOnly(10026));
+      const user = banned?.user || { id: task.targetId };
       if (!banned) {
         await repo('punishments').clear(guild.id, { userId: task.targetId, type: 'ban', clearedBy: null, reason: 'Ban already lifted' });
         return { status: TASK_STATUS.DONE };
@@ -94,10 +108,11 @@ async function executeTask(task, deps) {
     }
 
     case TASK_TYPES.REMOVE_ROLE: {
-      const member = await guild.members.fetch(task.targetId).catch(() => null);
-      const role = payload.roleId ? await guild.roles.fetch(payload.roleId).catch(() => null) : null;
+      const member = await guild.members.fetch(task.targetId).catch(missingOnly(10007));
+      if (!payload.roleId) throw new Error('Temporary role task has no roleId');
+      const role = payload.roleId ? await guild.roles.fetch(payload.roleId).catch(missingOnly(10011)) : null;
       if (!member || !role || !member.roles.cache.has(role.id)) {
-        await repo('punishments').clear(guild.id, { userId: task.targetId, type: 'role', clearedBy: null, reason: 'Temporary role no longer applied' });
+        await repo('punishments').clear(guild.id, { userId: task.targetId, type: 'role', roleId: payload.roleId, clearedBy: null, reason: 'Temporary role no longer applied' });
         return { status: TASK_STATUS.DONE };
       }
       await client.services.punishmentService.expireTempRole(guild, member, role, {
@@ -108,15 +123,15 @@ async function executeTask(task, deps) {
     }
 
     case TASK_TYPES.UNLOCK: {
-      const channel = task.targetId ? guild.channels.cache.get(task.targetId) : null;
+      const channel = task.targetId ? await guild.channels.fetch(task.targetId).catch(missingOnly(10003)) : null;
       if (!channel) return { status: TASK_STATUS.CANCELLED, error: 'Channel no longer exists' };
-      await client.services.channelService.unlock(ctx, channel, { system: true });
+      await client.services.channelService.unlock(ctx, channel, { system: true, roleIds: payload.roleIds });
       return { status: TASK_STATUS.DONE };
     }
 
     case TASK_TYPES.UNLOCK_SERVER: {
-      const channelIds = Array.isArray(payload.channelIds) && payload.channelIds.length > 0 ? payload.channelIds : null;
-      await client.services.channelService.unlock(ctx, null, { system: true, channelIds });
+      const channelIds = Array.isArray(payload.channelIds) ? payload.channelIds : null;
+      await client.services.channelService.unlock(ctx, null, { system: true, channelIds, roleIds: payload.roleIds });
       return { status: TASK_STATUS.DONE };
     }
 
@@ -150,7 +165,8 @@ async function runOnce(deps) {
       } catch (error) {
         const message = error && error.code ? String(error.code) : 'execution failed';
         log.warn('Scheduled task failed', { type: task.type, guildId: task.guildId, code: error && error.code });
-        await repo('tasks').complete(task.guildId, task.id, TASK_STATUS.FAILED, message).catch(() => null);
+        await repo('tasks').complete(task.guildId, task.id,
+          (task.attempts || 1) < (task.maxAttempts || 5) ? TASK_STATUS.PENDING : TASK_STATUS.FAILED, message).catch(() => null);
       }
     }
 
@@ -170,6 +186,7 @@ async function runOnce(deps) {
  * @param {object} deps { client, limits }
  */
 function start(appConfig, deps) {
+  stop();
   if (!appConfig.scheduler.enabled) {
     log.info('Scheduler disabled by configuration');
     return;
@@ -189,15 +206,17 @@ function start(appConfig, deps) {
   if (timer.unref) timer.unref();
 
   // First pass shortly after startup so expiries missed during downtime run soon.
-  const initial = setTimeout(() => {
+  initialTimer = setTimeout(() => {
     if (!stopped) void runOnce(deps);
   }, delay);
-  if (initial.unref) initial.unref();
+  if (initialTimer.unref) initialTimer.unref();
 }
 
 /** Stop the polling loop. */
 function stop() {
   stopped = true;
+  if (initialTimer) clearTimeout(initialTimer);
+  initialTimer = null;
   if (timer) {
     clearInterval(timer);
     timer = null;

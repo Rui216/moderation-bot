@@ -8,7 +8,7 @@
 
 /** True for plain objects only (not arrays, dates, or class instances). */
 function isPlainObject(value) {
-  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+  return Boolean(value) && (Object.getPrototypeOf(value) === Object.prototype || Object.getPrototypeOf(value) === null);
 }
 
 /**
@@ -29,6 +29,7 @@ function deepMerge(target, source, depth = 0) {
 
   const output = { ...target };
   for (const [key, value] of Object.entries(source)) {
+    if (['__proto__', 'constructor', 'prototype'].includes(key)) continue;
     output[key] = deepMerge(target[key], value, depth + 1);
   }
   return output;

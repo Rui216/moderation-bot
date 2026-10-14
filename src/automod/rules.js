@@ -39,7 +39,7 @@ function capsRatio(content) {
 /** Extract the registrable hostname of a URL-ish string. */
 function hostnameOf(candidate) {
   try {
-    const normalized = candidate.startsWith('http') ? candidate : `http://${candidate}`;
+    const normalized = /^https?:\/\//i.test(candidate) ? candidate : `http://${candidate}`;
     const url = new URL(normalized);
     return url.hostname.toLowerCase().replace(/^www\./, '');
   } catch {
@@ -132,7 +132,7 @@ function evaluateRule(rule, context) {
       for (const word of words) {
         if (!word) continue;
         if (allowList.includes(word)) continue;
-        const index = wholeWord ? firstWordIndex(content, word) : content.toLowerCase().indexOf(word);
+        const index = wholeWord ? firstWordIndex(content, word) : content.toLowerCase().indexOf(String(word).toLowerCase());
         if (index === -1) continue;
         evidence.push(word);
         lowestIndex = Math.min(lowestIndex, index);

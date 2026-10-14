@@ -260,21 +260,26 @@ async function handleInteraction(deps, interaction) {
   }
 
   const command = registry.get(interaction.commandName);
-  if (!command) return;
+  if (!command) {
+    await interaction.reply({ embeds: [errorEmbed({ title: 'Command Unavailable', description: 'This command is no longer registered in the bot. Ask an administrator to run syncslash.' })], ephemeral: true });
+    return;
+  }
+
+  // Acknowledge before any gateway request can exceed Discord's three-second deadline.
+  await interaction.deferReply({ ephemeral: true });
 
   let config;
   try {
     config = await repo('guilds').getConfig(interaction.guild.id);
   } catch (error) {
     log.warn('Configuration could not be loaded for interaction', { guildId: interaction.guild.id, code: error && error.code });
-    await interaction.reply({ embeds: [errorEmbed({ title: 'Command Failed' })], ephemeral: true }).catch(() => null);
+    await interaction.editReply({ embeds: [errorEmbed({ title: 'Command Failed' })] }).catch(() => null);
     return;
   }
 
   if (config.slashEnabled === false) {
-    await interaction.reply({
+    await interaction.editReply({
       embeds: [errorEmbed({ title: 'Slash Commands Disabled', description: 'Slash commands are turned off in this server. Use the prefix form instead.' })],
-      ephemeral: true,
     }).catch(() => null);
     return;
   }
@@ -284,7 +289,7 @@ async function handleInteraction(deps, interaction) {
     if (command.action) rateLimitService.consume(interaction.guild.id, interaction.user.id, 'action');
   } catch (error) {
     if (error instanceof RateLimitError) {
-      await interaction.reply({ embeds: [errorEmbed({ title: 'Slow Down', description: error.message })], ephemeral: true }).catch(() => null);
+      await interaction.editReply({ embeds: [errorEmbed({ title: 'Slow Down', description: error.message })] }).catch(() => null);
       return;
     }
     throw error;
@@ -298,9 +303,8 @@ async function handleInteraction(deps, interaction) {
   });
 
   if (!check.allowed) {
-    await interaction.reply({
+    await interaction.editReply({
       embeds: [errorEmbed({ title: 'Command Failed', description: new PermissionError().message })],
-      ephemeral: true,
     }).catch(() => null);
     return;
   }

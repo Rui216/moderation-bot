@@ -271,6 +271,11 @@ export async function clearPunishment(env, guildId, input = {}) {
     sql += ` AND type = ?${params.length}`;
   }
 
+  if (input.roleId) {
+    params.push(requireSnowflake(input.roleId, 'roleId'));
+    sql += ` AND role_id = ?${params.length}`;
+  }
+
   const meta = await run(env.DB, sql, params);
   return meta.changes || 0;
 }
@@ -328,11 +333,12 @@ export async function addStrike(env, guildId, input = {}) {
 export async function getStrikes(env, guildId, userId, windowHours = 24) {
   requireSnowflake(guildId, 'guildId');
   requireSnowflake(userId, 'userId');
-  const since = nowMs() - int(windowHours, { min: 1, max: 720, fallback: 24 }) * 60 * 60 * 1000;
+  const now = nowMs();
+  const since = now - int(windowHours, { min: 1, max: 720, fallback: 24 }) * 60 * 60 * 1000;
   const [row] = await all(
     env.DB,
-    'SELECT COALESCE(SUM(weight), 0) AS total FROM automod_strikes WHERE guild_id = ?1 AND user_id = ?2 AND expires_at > ?3',
-    [guildId, userId, since],
+    'SELECT COALESCE(SUM(weight), 0) AS total FROM automod_strikes WHERE guild_id = ?1 AND user_id = ?2 AND expires_at > ?3 AND created_at >= ?4',
+    [guildId, userId, now, since],
   );
   return row ? row.total : 0;
 }

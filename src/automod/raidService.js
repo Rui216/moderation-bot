@@ -144,6 +144,7 @@ async function applyRaidLockdown(guild, context, raid, joinCount) {
       .map((channel) => channel.id);
 
   let locked = 0;
+  const lockedIds = [];
   for (const channelId of channelIds.slice(0, 200)) {
     const channel = guild.channels.cache.get(channelId);
     if (!channel) continue;
@@ -155,7 +156,7 @@ async function applyRaidLockdown(guild, context, raid, joinCount) {
       recordCase: false,
     }).catch(() => null);
 
-    if (result && result.locked) locked += 1;
+    if (result && result.locked) { locked += 1; lockedIds.push(channelId); }
   }
 
   if (locked === 0) return;
@@ -169,7 +170,7 @@ async function applyRaidLockdown(guild, context, raid, joinCount) {
       type: 'unlock_server',
       targetId: null,
       runAt: Date.now() + autoUnlockMinutes * 60 * 1000,
-      payload: { moderatorId: 'system', reason: 'Raid lockdown expired', channelIds },
+      payload: { moderatorId: 'system', reason: 'Raid lockdown expired', channelIds: lockedIds, roleIds: raid.lockRoleIds || [guild.roles.everyone.id] },
     }).catch((error) => log.debug('Auto unlock task failed to queue', { code: error && error.code }));
   }
 

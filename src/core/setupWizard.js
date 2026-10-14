@@ -20,6 +20,7 @@ const {
   ButtonStyle,
   StringSelectMenuBuilder,
   ChannelSelectMenuBuilder,
+  RoleSelectMenuBuilder,
   ChannelType,
   PermissionFlagsBits,
   MessageFlags,
@@ -37,6 +38,8 @@ const { baseEmbed, successEmbed, errorEmbed } = require('../utils/embeds');
 const { sanitizePrefix, clampInt } = require('../utils/sanitize');
 const { logger } = require('../utils/logger');
 const { repo } = require('../db');
+const permissionService = require('../services/permissionService');
+const { ValidationError } = require('../utils/errors');
 const { defaultAutomodConfig, defaultLoggingConfig } = require('../config/defaults');
 
 const log = logger.child('wizard');
@@ -132,6 +135,7 @@ async function start(options) {
   const existing = sessions.get(key);
   if (existing) destroy(key);
 
+  const logging = await repo('guilds').getLogging(options.guild.id, { force: true });
   const session = {
     key,
     client: options.client,
@@ -150,10 +154,11 @@ async function start(options) {
       muteRoleEnabled: Boolean(options.config.muteRoleEnabled),
       createMuteRole: false,
       logMode: 'auto',
-      logChannels: { ...(options.config.logChannels || {}) },
+      logChannels: { ...(logging.channels || {}) },
       logSlotIndex: 0,
       logAutoCreated: null,
-      enabledEvents: null,
+      enabledEvents: Object.entries(logging.events || {}).filter(([, event]) => event.enabled).map(([key]) => key),
+      eventPage: 0,
       automodPreset: 'recommended',
       lockdownRoleIds: [...((options.config.lockdown && options.config.lockdown.roleIds) || [])],
       autoUnlockMinutes: (options.config.lockdown && options.config.lockdown.autoUnlockMinutes) || 0,
@@ -214,7 +219,7 @@ async function notifyExpired(session) {
     title: 'Setup Expired',
     description: 'The setup wizard closed because it was inactive for a while. Run the setup command again to continue.',
   });
-  await sendToSession(session, embed).catch(() => null);
+  await sendToSession(session, { embeds: [embed], components: [] }).catch(() => null);
 }
 
 /**
@@ -227,9 +232,14 @@ async function sendToSession(session, payload) {
     if (payload.embeds) {
       const body = { embeds: payload.embeds, components: payload.components || [], flags: MessageFlags.Ephemeral };
       if (session.interaction.deferred || session.interaction.replied) {
-        return session.interaction.editReply(body).catch(() => null);
+        const sent = await session.interaction.editReply({ embeds: body.embeds, components: body.components }).catch(() => null);
+        if (sent) session.messageId = sent.id;
+        return sent;
       }
-      return session.interaction.reply(body).catch(() => null);
+      await session.interaction.reply(body);
+      const sent = await session.interaction.fetchReply();
+      session.messageId = sent.id;
+      return sent;
     }
     return null;
   }
@@ -434,7 +444,9 @@ function renderStep(session) {
         .filter(([, meta]) => meta.defaultEnabled)
         .map(([key]) => key);
 
-      const options = Object.entries(LOG_EVENTS).slice(0, 25).map(([key, meta]) => ({
+      const page = session.data.eventPage || 0;
+      const pages = Math.ceil(Object.keys(LOG_EVENTS).length / 25);
+      const options = Object.entries(LOG_EVENTS).slice(page * 25, (page + 1) * 25).map(([key, meta]) => ({
         label: meta.label.slice(0, 90),
         value: key,
         description: `${(LOG_CATEGORIES[meta.category] || {}).label || meta.category} - ${meta.description}`.slice(0, 95),
@@ -461,10 +473,14 @@ function renderStep(session) {
           row(
             new StringSelectMenuBuilder()
               .setCustomId('setup:events:select')
-              .setPlaceholder('Select log events to enable')
+              .setPlaceholder(`Select log events to enable · Page ${page + 1}/${pages}`)
               .setMinValues(0)
               .setMaxValues(options.length)
               .addOptions(options),
+          ),
+          row(
+            new ButtonBuilder().setCustomId('setup:events-page:previous').setLabel('Previous events').setStyle(ButtonStyle.Secondary).setDisabled(page === 0),
+            new ButtonBuilder().setCustomId('setup:events-page:next').setLabel('More events').setStyle(ButtonStyle.Secondary).setDisabled(page >= pages - 1),
           ),
           row(
             new ButtonBuilder().setCustomId('setup:next').setLabel('Continue').setStyle(ButtonStyle.Success),
@@ -530,18 +546,11 @@ function renderStep(session) {
         }),
         components: [
           row(
-            new StringSelectMenuBuilder()
+            new RoleSelectMenuBuilder()
               .setCustomId('setup:lockdown:roles')
               .setPlaceholder('Roles to deny during lockdown')
-              .setMinValues(0)
-              .setMaxValues(Math.min(10, Math.max(1, session.guild.roles.cache.size - 1)))
-              .addOptions(
-                session.guild.roles.cache
-                  .filter((role) => role.id !== session.guild.id && !role.managed)
-                  .sort((a, b) => b.position - a.position)
-                  .first(25)
-                  .map((role) => ({ label: role.name.slice(0, 90), value: role.id, default: session.data.lockdownRoleIds.includes(role.id) })),
-              ),
+              .setMinValues(0).setMaxValues(10)
+              .setDefaultRoles(session.data.lockdownRoleIds.slice(0, 10)),
           ),
           row(
             new ButtonBuilder().setCustomId('setup:lockdown:unlock:0').setLabel('No Auto Unlock').setStyle(ButtonStyle.Secondary),
@@ -682,30 +691,6 @@ function roleStep(session, step) {
 
   const selected = session.data[config.field] || [];
 
-  const roleOptions = session.guild.roles.cache
-    .filter((role) => role.id !== session.guild.id && !role.managed)
-    .sort((a, b) => b.position - a.position)
-    .first(25)
-    .map((role) => ({
-      label: role.name.slice(0, 90),
-      value: role.id,
-      description: `${role.members.size} member${role.members.size === 1 ? '' : 's'}`,
-      default: selected.includes(role.id),
-    }));
-
-  if (roleOptions.length === 0) {
-    return {
-      embed: errorEmbed({
-        title: config.title,
-        description: 'This server has no roles that can be assigned. Create a role first, then re-run the wizard.',
-      }),
-      components: [row(
-        new ButtonBuilder().setCustomId('setup:next').setLabel('Skip').setStyle(ButtonStyle.Secondary),
-        new ButtonBuilder().setCustomId('setup:cancel').setLabel('Cancel').setStyle(ButtonStyle.Danger),
-      )],
-    };
-  }
-
   return {
     embed: baseEmbed({
       title: config.title,
@@ -726,12 +711,12 @@ function roleStep(session, step) {
     }),
     components: [
       row(
-        new StringSelectMenuBuilder()
+        new RoleSelectMenuBuilder()
           .setCustomId(`setup:role:${config.field}`)
           .setPlaceholder(`Select ${config.title.toLowerCase()}`)
           .setMinValues(0)
-          .setMaxValues(Math.min(10, roleOptions.length))
-          .addOptions(roleOptions),
+          .setMaxValues(10)
+          .setDefaultRoles(selected.slice(0, 10)),
       ),
       row(
         new ButtonBuilder().setCustomId('setup:next').setLabel('Continue').setStyle(ButtonStyle.Success),
@@ -775,8 +760,8 @@ async function handleComponent(client, interaction) {
     return true;
   }
 
-  // Only the member who started the wizard may drive it.
-  if (session.member.id !== interaction.user.id) {
+  // Stale or other administrators' wizard messages must not drive this session.
+  if (session.member.id !== interaction.user.id || interaction.message?.id !== session.messageId) {
     await interaction.reply({ embeds: [errorEmbed({ title: 'Setup In Progress', description: 'Another administrator is running the setup wizard in this server.' })], ephemeral: true }).catch(() => null);
     return true;
   }
@@ -784,26 +769,36 @@ async function handleComponent(client, interaction) {
   const [prefix, group, action, extra] = interaction.customId.split(':');
   void prefix;
 
+  if (session.busy) {
+    await interaction.reply({ embeds: [errorEmbed({ title: 'Setup Busy', description: 'Please wait for the previous step to finish.' })], ephemeral: true });
+    return true;
+  }
+  session.busy = true;
   try {
-    if (interaction.isStringSelectMenu() || interaction.isChannelSelectMenu()) {
-      // handleSelect acknowledges each select itself.
+    await interaction.deferUpdate();
+    const member = await session.guild.members.fetch(interaction.user.id);
+    const config = await repo('guilds').getConfig(session.guild.id, { force: true });
+    if (!permissionService.canRunCommand({ member, config, command: { permission: 'admin' }, ownerIds: client.appConfig?.discord?.ownerIds || [] }).allowed) {
+      throw new ValidationError('Administrator access is required.');
+    }
+    if (interaction.isAnySelectMenu()) {
+      // All components were acknowledged before storage and permission checks.
       await handleSelect(session, group, interaction);
     } else if (interaction.isButton()) {
       // Discord requires every button press to be acknowledged within three
       // seconds. Acknowledge first, then update the wizard message.
-      await interaction.deferUpdate().catch(() => null);
       await handleButton(session, group, action, extra);
-    } else {
-      await interaction.deferUpdate().catch(() => null);
     }
   } catch (error) {
     log.warn('Wizard interaction failed', { group, code: error && error.code });
-    const embed = errorEmbed({ title: 'Setup Error', description: 'That step could not be completed. Try again or restart the wizard with the setup command.' });
+    const embed = errorEmbed({ title: 'Setup Error', description: error instanceof ValidationError ? error.message : 'That step could not be completed. Try again or restart the wizard with the setup command.' });
     if (!interaction.replied && !interaction.deferred) {
       await interaction.reply({ embeds: [embed], ephemeral: true }).catch(() => null);
     } else {
       await interaction.followUp({ embeds: [embed], ephemeral: true }).catch(() => null);
     }
+  } finally {
+    session.busy = false;
   }
 
   return true;
@@ -812,6 +807,12 @@ async function handleComponent(client, interaction) {
 /** Route button presses. */
 async function handleButton(session, group, action, extra) {
   switch (group) {
+    case 'events-page':
+      session.data.eventPage = Math.max(0, Math.min(Math.ceil(Object.keys(LOG_EVENTS).length / 25) - 1,
+        (session.data.eventPage || 0) + (action === 'next' ? 1 : -1)));
+      await render(session);
+      return;
+
     case 'next':
       session.awaitingText = null;
       if (session.stepIndex < STEPS.length - 1) session.stepIndex += 1;
@@ -935,23 +936,22 @@ async function handleSelect(session, group, interaction) {
       // The field name is the third segment of the custom id.
       const field = interaction.customId.split(':')[2];
       if (['adminRoleIds', 'modRoleIds', 'trustedRoleIds'].includes(field)) {
+        if (values.includes(session.guild.id)) throw new ValidationError('@everyone cannot be a staff role.');
         session.data[field] = values;
       }
-      await interaction.deferUpdate().catch(() => null);
       await render(session);
       return;
     }
 
     case 'events': {
-      session.data.enabledEvents = values;
-      await interaction.deferUpdate().catch(() => null);
+      const visible = Object.keys(LOG_EVENTS).slice((session.data.eventPage || 0) * 25, ((session.data.eventPage || 0) + 1) * 25);
+      session.data.enabledEvents = [...(session.data.enabledEvents || []).filter((key) => !visible.includes(key)), ...values.filter((key) => visible.includes(key))];
       await render(session);
       return;
     }
 
     case 'lockdown': {
       session.data.lockdownRoleIds = values;
-      await interaction.deferUpdate().catch(() => null);
       await render(session);
       return;
     }
@@ -964,13 +964,11 @@ async function handleSelect(session, group, interaction) {
       } else {
         session.stepIndex = STEPS.indexOf('log_events');
       }
-      await interaction.deferUpdate().catch(() => null);
       await render(session);
       return;
     }
 
     default:
-      await interaction.deferUpdate().catch(() => null);
   }
 }
 
@@ -983,7 +981,7 @@ async function handleSelect(session, group, interaction) {
 async function handleMessage(message) {
   if (!message.guild || message.author.bot) return false;
   const session = get(message.guild.id, message.author.id);
-  if (!session || !session.awaitingText) return false;
+  if (!session || !session.awaitingText || message.channel.id !== session.channel.id || session.busy) return false;
 
   const mode = session.awaitingText;
   session.awaitingText = null;
@@ -1077,9 +1075,10 @@ async function save(session) {
     .filter(([, meta]) => meta.defaultEnabled)
     .map(([key]) => key);
 
+  const existingLogging = await repo('guilds').getLogging(guild.id, { force: true });
   const eventPatch = {};
   for (const key of Object.keys(LOG_EVENTS)) {
-    eventPatch[key] = { enabled: enabledEvents.includes(key), channelId: null };
+    eventPatch[key] = { enabled: enabledEvents.includes(key), channelId: existingLogging.events?.[key]?.channelId || null };
   }
 
   await repo('guilds').updateLogging(guild.id, {
@@ -1157,7 +1156,7 @@ async function createMuteRole(guild) {
 
 /** Deny Send Messages and Add Reactions for the mute role in text channels. */
 async function applyMuteRoleOverwrites(guild, roleId) {
-  const channels = guild.channels.cache.filter((channel) => channel.isTextBased && channel.isTextBased());
+  const channels = guild.channels.cache.filter((channel) => channel.isTextBased?.() && channel.permissionOverwrites && !channel.isThread?.());
   let applied = 0;
 
   for (const channel of channels.values()) {
@@ -1176,11 +1175,12 @@ async function applyMuteRoleOverwrites(guild, roleId) {
 /** Create a private category with one channel per log slot. */
 async function createLogChannels(guild) {
   const staffRoleIds = [...guild.roles.cache.values()]
-    .filter((role) => role.permissions.has(PermissionFlagsBits.ViewAuditLog) || role.permissions.has(PermissionFlagsBits.ManageMessages))
+    .filter((role) => role.id !== guild.id && (role.permissions.has(PermissionFlagsBits.ViewAuditLog) || role.permissions.has(PermissionFlagsBits.ManageMessages)))
     .map((role) => role.id);
 
   const overwrites = [
     { id: guild.roles.everyone.id, deny: [PermissionFlagsBits.ViewChannel] },
+    { id: guild.members.me.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.EmbedLinks, PermissionFlagsBits.AttachFiles, PermissionFlagsBits.ReadMessageHistory] },
     ...staffRoleIds.map((roleId) => ({ id: roleId, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages] })),
   ];
 

@@ -1,0 +1,35 @@
+START HERE — COMPLETE UPDATED BOT
+================================
+
+This archive contains the full project with the changes ALREADY APPLIED.
+You do not need the .patch file or to manually merge code changes.
+
+1. Back up your existing bot folder and stop the old bot process.
+2. Extract this archive. Use the enclosed moderation-bot folder as your
+   replacement project folder, or upload its contents to your hosting panel.
+3. Keep your existing private configuration: copy your .env into this folder
+   if you use one, or retain your hosting panel's environment variables.
+   For a new installation, copy .env.example to .env and fill it in privately.
+   This archive does not contain your token or other secrets.
+4. Preserve your real Cloudflare D1/KV binding IDs and Worker configuration.
+   Do not replace those deployment-specific values with example placeholders.
+5. In the moderation-bot folder, use Node.js 20.18+ and run:
+
+       npm ci
+       npm run verify
+
+6. Deploy the UPDATED Cloudflare Worker using your existing account,
+   database bindings, and Worker secret. Follow README.md and
+   cloudflare/worker/README.md. No new database schema migration is required
+   for this update. Do not create a replacement production database.
+7. Start the bot with npm start (or your existing hosting/PM2 process).
+   Run only one bot process for your bot token/database.
+8. In Discord, run /ticketsetup without options for the interactive setup.
+
+For the feature summary, upgrade details, permissions, known limits, and
+live smoke-test checklist, open docs/REVIEW.md.
+
+Dependencies are installed by npm ci; node_modules is intentionally not
+bundled because it is machine-specific. Discord/Cloudflare credentials and
+live deployment configuration must be supplied by you. The code has passed
+offline verification but has not been deployed or tested in your live server.

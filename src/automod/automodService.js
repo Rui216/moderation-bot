@@ -7,7 +7,7 @@
  *   1. Rules are evaluated against message content (see rules.js).
  *   2. The first matching rule with a punishment other than "none" is applied.
  *   3. Every violation records weighted strikes in D1 with a rolling window.
- *   4. If the new strike total lands exactly on an escalation step, that step's
+ *   4. If the new strike total crosses an escalation threshold, the highest step's
  *      punishment is applied instead of the per-rule punishment.
  *
  * There is intentionally no flood or rate detection here: repeat offenders are
@@ -18,6 +18,7 @@
  */
 
 const { PermissionFlagsBits } = require('discord.js');
+const { createHash } = require('crypto');
 
 const { AUTOMOD_RULES, COLORS } = require('../config/constants');
 const { baseEmbed } = require('../utils/embeds');
@@ -108,7 +109,8 @@ async function handleMessage(message, context) {
   const exempt = exemptionReason(message, automod, config, appConfig);
   if (exempt) return { handled: false, reason: exempt };
 
-  if (!remember(message.id)) return { handled: false, reason: 'already-processed' };
+  const revision = createHash('sha256').update(message.content).digest('hex');
+  if (!remember(`${message.id}:${revision}`)) return { handled: false, reason: 'already-processed' };
 
   const violations = [];
   for (const rule of AUTOMOD_RULES) {
@@ -168,6 +170,7 @@ async function enforce(message, context, violations, primary) {
   const weight = violations.reduce((total, violation) => total + (Number(violation.weight) || 0), 0);
 
   let strikeTotal = 0;
+  let recordedWeight = Math.min(10, Math.max(1, weight || 1));
   try {
     const result = await repo('punishments').addStrike(guild.id, {
       userId: member.id,
@@ -179,6 +182,7 @@ async function enforce(message, context, violations, primary) {
       messageId: message.id,
     });
     strikeTotal = result.strikes;
+    recordedWeight = result.recorded || recordedWeight;
   } catch (error) {
     log.debug('Strike recording failed', { code: error && error.code });
   }
@@ -189,7 +193,7 @@ async function enforce(message, context, violations, primary) {
   let escalationStep = null;
 
   if (escalation.enabled !== false && Array.isArray(escalation.steps) && strikeTotal > 0) {
-    escalationStep = escalation.steps.find((step) => step.strikes === strikeTotal) || null;
+    escalationStep = selectEscalationStep(escalation.steps, strikeTotal, recordedWeight);
     if (escalationStep && escalationStep.action && escalationStep.action !== 'none') {
       punishment = escalationStep.action;
     }
@@ -292,6 +296,12 @@ async function notifyAuthor(message, violation) {
   }).catch(() => null);
 }
 
+/** Select the highest threshold crossed, including weighted jumps over a step. */
+function selectEscalationStep(steps, total, added = 1) {
+  return (steps || []).filter((step) => step.strikes > total - added && step.strikes <= total)
+    .sort((a, b) => b.strikes - a.strikes)[0] || null;
+}
+
 /**
  * Apply the escalation ladder for an already-recorded violation. Exposed so
  * commands such as warn can participate in the same ladder if desired.
@@ -318,6 +328,7 @@ async function resolveEscalationStep(ctx, member, strikeTotal) {
 
 module.exports = {
   handleMessage,
+  selectEscalationStep,
   resolveEscalationStep,
   exemptionReason,
   parseEscalationDuration,

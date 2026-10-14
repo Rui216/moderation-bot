@@ -30,7 +30,8 @@ const { formatDuration, formatAbsolute } = require('./duration');
 function clip(value, max) {
   const text = value === null || value === undefined ? '' : String(value);
   if (text.length <= max) return text;
-  return `${text.slice(0, Math.max(0, max - 3))}...`;
+  if (max < 3) return text.slice(0, Math.max(0, max));
+  return `${text.slice(0, max - 3)}...`;
 }
 
 /**
@@ -96,7 +97,34 @@ function baseEmbed(options = {}) {
     embed.timestamp = new Date(options.timestampMs || Date.now()).toISOString();
   }
 
+  // Discord's 6,000-character ceiling includes ALL textual properties, not
+  // merely the per-field limits. Keep complete fields where possible.
+  let remaining = EMBED_LIMITS.total;
+  for (const [container, key] of [[embed, 'title'], [embed.author, 'name'], [embed.footer, 'text'], [embed, 'description']]) {
+    if (!container || !container[key]) continue;
+    if (remaining <= 0) { delete container[key]; continue; }
+    container[key] = clip(container[key], remaining);
+    remaining -= container[key].length;
+  }
+  if (embed.fields) {
+    const fields = [];
+    for (const field of embed.fields) {
+      if (remaining <= field.name.length) break;
+      const value = clip(field.value, remaining - field.name.length);
+      fields.push({ ...field, value });
+      remaining -= field.name.length + value.length;
+    }
+    if (fields.length) embed.fields = fields;
+    else delete embed.fields;
+  }
   return embed;
+}
+
+/** Combined text budget shared by all embeds in one Discord message. */
+function embedLength(embed) {
+  return (embed.title?.length || 0) + (embed.description?.length || 0)
+    + (embed.author?.name?.length || 0) + (embed.footer?.text?.length || 0)
+    + (embed.fields || []).reduce((sum, field) => sum + field.name.length + field.value.length, 0);
 }
 
 /**
@@ -373,6 +401,7 @@ function emptyEmbed(title, description, color = COLORS.neutral) {
 module.exports = {
   COLORS,
   baseEmbed,
+  embedLength,
   moderationEmbed,
   infoEmbed,
   successEmbed,

@@ -14,7 +14,7 @@ const { sanitizeReason } = require('./sanitize');
 const parser = require('./parser');
 
 /** Matches a token that starts with a duration expression, e.g. "10m", "2h". */
-const DURATION_TOKEN = /^\d+(?:\.\d+)?\s*(?:s|sec|secs|second|seconds|m|min|mins|minute|minutes|h|hr|hrs|hour|hours|d|day|days|w|week|weeks)$/i;
+const DURATION_TOKEN = /^(?:\d+(?:\.\d+)?\s*(?:seconds?|secs?|s|minutes?|mins?|m|hours?|hrs?|h|days?|d|weeks?|w)\s*)+$/i;
 
 /**
  * Resolve the member named by the first argument.
@@ -89,7 +89,9 @@ async function resolveChannelArg(ctx, options = {}) {
     return null;
   }
   const channel = await parser.resolveChannel(ctx.guild, query);
-  if (!channel && required) throw new ValidationError('That channel could not be found.');
+  if (!channel && (required || /^(?:<#\d+>|\d{17,20})$/.test(query))) {
+    throw new ValidationError('That channel could not be found. No channels were changed.');
+  }
   return channel;
 }
 

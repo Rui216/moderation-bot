@@ -51,11 +51,18 @@ storage behind an authenticated Cloudflare Worker gateway.
 
 **Tickets**
 
-- `ticketpanel` posts a message with an Open Ticket button. Each press creates a private channel
-  that only the member, the support role, and the bot can see.
-- `ticketsetup #category @support #log-channel` sets the category, support role, and transcript log.
-- Closing a ticket (button or `ticketclose`) saves a plain-text transcript to the log channel,
-  then deletes the channel. One open ticket per member.
+- Run `/ticketsetup` (or `ticketsetup` with your enabled prefix) without arguments for an
+  interactive wizard: category, support-role, transcript-log, and panel-channel pickers;
+  editable panel text; preview; **Save only** and **Save & publish** controls.
+- `ticketpanel [channel]` publishes the saved panel. Members click **Open Ticket** and fill in
+  a subject and description. Each member can have one open ticket. The channel is private
+  to its opener, the support role, and the bot; Discord administrators always retain access.
+- Both the close button and `ticketclose` require confirmation. The bot paginates the
+  transcript and uploads it before deleting the channel. Failed exports or deletions keep
+  the ticket record recoverable. A separate transcript destination is now required.
+- Setup drafts expire after 10 minutes and only their initiating administrator can operate
+  them. Existing ticket records and numbering survive a settings change.
+- See [the ticket guide and upgrade checklist](docs/REVIEW.md#using-the-ticket-system).
 
 **Automod**
 
@@ -571,12 +578,14 @@ itself is single-instance.
 
 **Durable scheduled tasks.** Timed actions are rows, not timers. A restart on Wispbyte
 cannot lose a pending unmute, unban, role removal, or lockdown expiry. Claiming is a
-single `UPDATE ... RETURNING`, so a task is never executed twice, and tasks stuck in
-`running` after a crash are reclaimed after a stale timeout.
+single `UPDATE ... RETURNING`; tasks stuck in `running` after a crash are reclaimed after
+an expired lease. This is **at-least-once**, not exactly-once execution. Failed tasks retry
+with a delay up to their attempt limit. Old punishment cases do not reverse newer ones.
 
 **Strikes instead of flood detection.** Automod records weighted strikes in a rolling
-window. When the total lands exactly on a configured step, that step's punishment is
-applied. This makes escalation deterministic and avoids punishing the same burst twice.
+window. When weighted strikes cross one or more thresholds, the highest newly crossed
+step is applied. Edited messages are evaluated too; duplicate deliveries of the same
+message-content revision are ignored in the bounded in-process cache.
 
 **Configuration reads are cached, writes invalidate.** Configuration, automod, and logging
 documents are cached in memory for 60 seconds and invalidated on write, so the hot path
@@ -611,9 +620,12 @@ documents are cached in memory for 60 seconds and invalidated on write, so the h
 
 ```bash
 npm run check              # parse every file with node --check
-npm run selftest           # 431 offline checks: registry, config, utils, rules, Worker routing
-npm run test:integration    # end-to-end pipeline test with fake Discord objects and a fake transport
-npm run verify             # all three, in order
+npm run selftest           # registry, configuration, utilities, rules, Worker routing
+npm run test:integration   # command pipeline against fake Discord and transport objects
+npm run test:tickets       # ticket wizard, modal, races, permissions, transcript failure paths
+npm run test:regression    # scheduler, lockdown restoration, automod, replies, argument regressions
+npm run test:storage       # Worker persistence against real SQLite (sql.js), including rollback
+npm run verify            # all checks above; also available as npm test
 ```
 
 The self test loads every source module, validates every command definition and slash
@@ -622,7 +634,11 @@ route table with a stubbed database to confirm authentication, routing, validati
 error mapping. The integration test executes real commands against fakes and asserts the
 resulting embeds, case payloads, punishment rows, and error classification.
 
-No test touches the network or requires a real token.
+Tests run offline after `npm ci` and require no Discord token. `sql.js` is a development-only
+SQLite test dependency; production code still uses Cloudflare D1. CI runs verification on
+Node 20 and 22. These tests do not replace a smoke test in a disposable Discord server.
+
+See [the review, upgrade instructions, and known limits](docs/REVIEW.md).
 
 ---
 

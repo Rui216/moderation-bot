@@ -18,6 +18,8 @@ const moderationService = require('./moderationService');
 const hierarchyService = require('./hierarchyService');
 
 const log = logger.child('channels');
+const { createKeyedQueue } = require('../utils/keyedQueue');
+const channelQueue = createKeyedQueue();
 
 /** Discord's bulk delete window: messages older than 14 days cannot be bulk deleted. */
 const BULK_DELETE_MAX_AGE_MS = 14 * 24 * 60 * 60 * 1000;
@@ -172,68 +174,66 @@ async function slowmode(ctx, channel, seconds, reason) {
  * @param {{reason?: string, roleIds?: string[], moderatorId?: string, recordCase?: boolean}} options
  * @returns {Promise<{locked: boolean, already: boolean, roleIds: string[]}>}
  */
-async function lockChannel(guild, channel, options = {}) {
-  const me = guild.members.me;
-  if (!me || !me.permissions.has(PermissionFlagsBits.ManageChannels)) {
-    throw new ConfigError('The bot needs the Manage Channels permission to lock channels.', { code: 'BOT_MISSING_PERMISSION' });
-  }
-  if (!channel.permissionOverwrites || !channel.isTextBased?.()) {
-    return { locked: false, already: false, roleIds: [] };
-  }
-
-  const roleIds = (options.roleIds && options.roleIds.length > 0)
-    ? options.roleIds
-    : [guild.roles.everyone.id];
-
-  const alreadyLocked = roleIds.every((roleId) => (
-    channel.permissionOverwrites.cache.get(roleId)?.deny.has(PermissionFlagsBits.SendMessages) === true
-  ));
-  if (alreadyLocked) return { locked: false, already: true, roleIds };
-
-  for (const roleId of roleIds) {
-    await channel.permissionOverwrites.edit(roleId, { SendMessages: false }, {
-      reason: sanitizeReason(options.reason, { maxLength: 200, fallback: 'Channel locked' }),
-    }).catch((error) => {
-      log.debug('Channel lock overwrite failed', { channelId: channel.id, roleId, code: error && error.code });
+function lockChannel(guild, channel, options = {}) {
+  return channelQueue(`${guild.id}:${channel.id}`, async () => {
+    if (!channel.permissionOverwrites || !channel.isTextBased?.() || channel.isThread?.()) {
+      return { locked: false, already: false, roleIds: [] };
+    }
+    const roleIds = options.roleIds?.length ? options.roleIds : [guild.roles.everyone.id];
+    const previous = {};
+    for (const id of roleIds) {
+      const overwrite = channel.permissionOverwrites.cache.get(id);
+      if (overwrite?.deny.has(PermissionFlagsBits.SendMessages)) continue;
+      previous[id] = overwrite?.allow.has(PermissionFlagsBits.SendMessages) ? true : null;
+    }
+    if (!Object.keys(previous).length) return { locked: false, already: true, roleIds };
+    // Persist original overrides BEFORE editing Discord, including explicit allows.
+    await repo('guilds').mutateMisc(guild.id, (misc) => {
+      const locks = { ...(misc.channelLocks || {}) };
+      locks[channel.id] = { ...previous, ...(locks[channel.id] || {}) };
+      return { ...misc, channelLocks: locks };
     });
-  }
-
-  return { locked: true, already: false, roleIds };
+    for (const id of Object.keys(previous)) {
+      await channel.permissionOverwrites.edit(id, { SendMessages: false }, {
+        reason: sanitizeReason(options.reason, { maxLength: 200, fallback: 'Channel locked' }),
+      });
+    }
+    return { locked: true, already: false, roleIds };
+  });
 }
 
-/**
- * Restore SendMessages for a locked channel.
- * @param {import('discord.js').Guild} guild
- * @param {import('discord.js').GuildChannel} channel
- * @param {{reason?: string, roleIds?: string[], moderatorId?: string}} options
- */
-async function unlockChannel(guild, channel, options = {}) {
-  const me = guild.members.me;
-  if (!me || !me.permissions.has(PermissionFlagsBits.ManageChannels)) {
-    throw new ConfigError('The bot needs the Manage Channels permission to unlock channels.', { code: 'BOT_MISSING_PERMISSION' });
-  }
-  if (!channel.permissionOverwrites || !channel.isTextBased?.()) {
-    return { unlocked: false, roleIds: [] };
-  }
-
-  const roleIds = (options.roleIds && options.roleIds.length > 0)
-    ? options.roleIds
-    : [guild.roles.everyone.id];
-
-  let changed = false;
-  for (const roleId of roleIds) {
-    const overwrite = channel.permissionOverwrites.cache.get(roleId);
-    if (!overwrite || !overwrite.deny.has(PermissionFlagsBits.SendMessages)) continue;
-
-    await channel.permissionOverwrites.edit(roleId, { SendMessages: null }, {
-      reason: sanitizeReason(options.reason, { maxLength: 200, fallback: 'Channel unlocked' }),
-    }).catch((error) => {
-      log.debug('Channel unlock overwrite failed', { channelId: channel.id, roleId, code: error && error.code });
+/** Restore original overrides. Unknown legacy locks fall back to inheritance. */
+function unlockChannel(guild, channel, options = {}) {
+  return channelQueue(`${guild.id}:${channel.id}`, async () => {
+    if (!channel.permissionOverwrites || !channel.isTextBased?.() || channel.isThread?.()) {
+      return { unlocked: false, roleIds: [] };
+    }
+    const config = await repo('guilds').getConfig(guild.id, { force: true });
+    const previous = config.misc?.channelLocks?.[channel.id];
+    if (!previous && !options.allowLegacy) return { unlocked: false, roleIds: [] };
+    const roleIds = options.roleIds?.length ? options.roleIds
+      : previous ? Object.keys(previous) : config.lockdown?.roleIds?.length ? config.lockdown.roleIds : [guild.roles.everyone.id];
+    let changed = false;
+    for (const id of roleIds) {
+      // If this lock has a snapshot, leave pre-existing denials alone.
+      if (previous && !Object.prototype.hasOwnProperty.call(previous, id)) continue;
+      const overwrite = channel.permissionOverwrites.cache.get(id);
+      if (!overwrite?.deny.has(PermissionFlagsBits.SendMessages)) continue;
+      await channel.permissionOverwrites.edit(id, { SendMessages: previous?.[id] ?? null }, {
+        reason: sanitizeReason(options.reason, { maxLength: 200, fallback: 'Channel unlocked' }),
+      });
+      changed = true;
+    }
+    if (previous) await repo('guilds').mutateMisc(guild.id, (misc) => {
+      const locks = { ...(misc.channelLocks || {}) };
+      const remaining = { ...(locks[channel.id] || {}) };
+      for (const id of roleIds) delete remaining[id];
+      if (Object.keys(remaining).length) locks[channel.id] = remaining;
+      else delete locks[channel.id];
+      return { ...misc, channelLocks: locks };
     });
-    changed = true;
-  }
-
-  return { unlocked: changed, roleIds };
+    return { unlocked: changed, roleIds };
+  });
 }
 
 /**
@@ -258,14 +258,20 @@ async function lockdown(ctx, channel) {
     : [ctx.guild.roles.everyone.id];
 
   const lockedIds = [];
+  const failedIds = [];
   for (const target of targetChannels) {
     const result = await lockChannel(ctx.guild, target, {
       reason: 'Lockdown applied',
       roleIds,
-    }).catch(() => null);
+    }).catch((error) => {
+      failedIds.push(target.id);
+      log.warn('Lockdown channel failed', { channelId: target.id, code: error.code });
+      return null;
+    });
     if (result && result.locked) lockedIds.push(target.id);
-    if (result && result.already) lockedIds.push(target.id);
   }
+
+  if (!isServerWide && failedIds.length) throw new ValidationError('Could not fully lock this channel. Check Manage Roles and channel overrides; any partial changes can be restored with unlock.');
 
   const autoUnlockMinutes = config.lockdown && Number.isFinite(config.lockdown.autoUnlockMinutes)
     ? config.lockdown.autoUnlockMinutes
@@ -282,8 +288,8 @@ async function lockdown(ctx, channel) {
     perform: null,
     dm: false,
     description: isServerWide
-      ? `${lockedIds.length} channel${lockedIds.length === 1 ? '' : 's'} locked.`
-      : `<#${channel.id}> locked.`,
+      ? `${lockedIds.length} channels locked; ${failedIds.length} failed. Already-locked channels were left unchanged.`
+      : (lockedIds.length ? `<#${channel.id}> locked.` : `<#${channel.id}> was already locked or is not lockable.`),
     extraFields: [
       { name: 'Channels', value: isServerWide ? String(lockedIds.length) : `<#${channel.id}>`, inline: true },
       { name: 'Denied Roles', value: roleIds.map((roleId) => `<@&${roleId}>`).join(', ').slice(0, 1024), inline: false },
@@ -297,12 +303,12 @@ async function lockdown(ctx, channel) {
     },
   });
 
-  if (autoUnlockMinutes > 0) {
+  if (autoUnlockMinutes > 0 && lockedIds.length > 0) {
     await repo('tasks').create(ctx.guild.id, {
       type: isServerWide ? 'unlock_server' : 'unlock',
       targetId: isServerWide ? null : channel.id,
       runAt: Date.now() + autoUnlockMinutes * 60 * 1000,
-      payload: { moderatorId: ctx.moderator.id, channelIds: lockedIds, roleIds, reason: 'Lockdown expired' },
+      payload: { moderatorId: ctx.moderator?.id || null, channelIds: lockedIds, roleIds, reason: 'Lockdown expired' },
       caseNumber: result.caseNumber,
     }).catch((error) => log.debug('Auto unlock task failed to queue', { code: error && error.code }));
   }
@@ -318,23 +324,29 @@ async function lockdown(ctx, channel) {
  */
 async function unlock(ctx, channel, options = {}) {
   const config = ctx.config;
-  const isServerWide = !channel && !options.channelIds;
+  const isServerWide = !channel;
 
-  const roleIds = (config.lockdown && Array.isArray(config.lockdown.roleIds) && config.lockdown.roleIds.length > 0)
-    ? config.lockdown.roleIds
-    : [ctx.guild.roles.everyone.id];
+  // Saved snapshots, not today's defaults, determine which roles to restore.
+  const roleIds = options.roleIds?.length ? options.roleIds : undefined;
 
   const targets = options.channelIds
-    ? options.channelIds.map((id) => ctx.guild.channels.cache.get(id)).filter(Boolean)
+    ? (await Promise.all(options.channelIds.map((id) => ctx.guild.channels.fetch(id).catch((error) => { if (error.code === 10003) return null; throw error; })))).filter(Boolean)
     : (isServerWide
       ? [...ctx.guild.channels.cache.values()].filter((candidate) => candidate.isTextBased() && !candidate.isThread?.())
       : [channel]);
 
   let unlockedCount = 0;
+  let failedCount = 0;
   for (const target of targets.slice(0, 200)) {
-    const result = await unlockChannel(ctx.guild, target, { roleIds, reason: 'Lockdown lifted' }).catch(() => null);
+    const result = await unlockChannel(ctx.guild, target, { roleIds, allowLegacy: Boolean(channel) && !options.system, reason: 'Lockdown lifted' }).catch((error) => {
+      failedCount += 1;
+      log.warn('Channel unlock failed', { channelId: target.id, code: error.code });
+      return null;
+    });
     if (result && result.unlocked) unlockedCount += 1;
   }
+
+  if (failedCount && (options.system || !isServerWide)) throw new ValidationError('Some channels could not be unlocked. Check Manage Roles and channel overrides, then retry.');
 
   const result = await moderationService.applyAction({
     guild: ctx.guild,
@@ -347,14 +359,14 @@ async function unlock(ctx, channel, options = {}) {
     perform: null,
     dm: false,
     description: isServerWide
-      ? `${unlockedCount} channel${unlockedCount === 1 ? '' : 's'} unlocked.`
+      ? `${unlockedCount} channels unlocked; ${failedCount} failed.`
       : `<#${channel.id}> unlocked.`,
     extraFields: [{ name: 'Channels Changed', value: String(unlockedCount), inline: true }],
     logEventKey: options.system ? 'punishment_expired' : 'mod_action',
     metadata: { serverWide: isServerWide, unlocked: unlockedCount },
   });
 
-  if (!options.system) {
+  if (!options.system && failedCount === 0) {
     await repo('tasks').cancel(ctx.guild.id, {
       type: isServerWide ? 'unlock_server' : 'unlock',
       targetId: isServerWide ? null : channel.id,
@@ -409,18 +421,17 @@ async function forceNickname(ctx, target, nickname, reason) {
  * @param {string} [reason]
  */
 async function toggleNicknameLock(ctx, target, nickname, reason) {
-  const misc = { ...(ctx.config.misc || {}) };
-  const locks = { ...(misc.nickLocks || {}) };
-
+  hierarchyService.assertBotPermissions(ctx.guild, ['ManageNicknames']);
+  hierarchyService.assertCanActOn(ctx.moderator, target);
   const removing = nickname === null || nickname === undefined || nickname === '';
-  if (removing) {
-    delete locks[target.id];
-  } else {
-    locks[target.id] = cleanText(nickname, 32);
-  }
-  misc.nickLocks = locks;
-
-  const saved = await repo('guilds').updateConfig(ctx.guild.id, { misc });
+  const saved = await repo('guilds').mutateMisc(ctx.guild.id, (misc) => {
+    const locks = { ...(misc.nickLocks || {}) };
+    if (removing) delete locks[target.id];
+    else locks[target.id] = cleanText(nickname, 32);
+    return { ...misc, nickLocks: locks };
+  });
+  const misc = saved.misc;
+  const locks = misc.nickLocks;
 
   return moderationService.applyAction({
     guild: ctx.guild,

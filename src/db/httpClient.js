@@ -81,8 +81,8 @@ class HttpClient {
     const upperMethod = method.toUpperCase();
     const retryableByMethod = RETRYABLE_METHODS.has(upperMethod);
     const configuredRetries = options.retries !== undefined ? options.retries : this.maxRetries;
-    // Non-idempotent writes are retried only on transport errors, never on a
-    // received status code, so a duplicate case cannot be created by a retry.
+    // Never retry writes, even on transport errors: the server may already
+    // have committed the write before the connection failed.
     const maxAttempts = (retryableByMethod ? configuredRetries : 0) + 1;
 
     let lastError = null;
@@ -116,7 +116,11 @@ class HttpClient {
         }
 
         if (response.ok) {
-          return payload === null ? {} : payload;
+          if (response.status === 204) return {};
+          if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+            throw new DatabaseError('Gateway returned an invalid JSON response', { code: 'GATEWAY_INVALID_RESPONSE', status: response.status });
+          }
+          return payload;
         }
 
         // The gateway returns { error: { code, message } } for known failures.

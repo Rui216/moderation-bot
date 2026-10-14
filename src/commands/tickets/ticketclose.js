@@ -33,12 +33,11 @@ module.exports = {
       return;
     }
 
-    // The channel is deleted as part of closing, so no reply follows.
-    await ticketService.closeTicket({
-      client: ctx.client,
-      guild: ctx.guild,
-      channel: ctx.channel,
-      closedBy: ctx.author,
-    });
+    // Both prefix and slash commands require an explicit destructive confirmation.
+    const payload = ticketService.closePrompt();
+    if (ctx.isSlash) {
+      if (ctx.interaction.deferred || ctx.interaction.replied) await ctx.interaction.editReply(payload);
+      else await ctx.interaction.reply({ ...payload, ephemeral: true });
+    } else await ctx.channel.send(payload);
   },
 };

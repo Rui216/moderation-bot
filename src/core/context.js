@@ -18,7 +18,7 @@
 const { ChannelType } = require('discord.js');
 
 const { COLORS, MESSAGES } = require('../config/constants');
-const { baseEmbed, errorEmbed, noticeEmbed, successEmbed, infoEmbed } = require('../utils/embeds');
+const { baseEmbed, embedLength, errorEmbed, noticeEmbed, successEmbed, infoEmbed } = require('../utils/embeds');
 const { safeErrorMessage, isUserError } = require('../utils/errors');
 const { logger } = require('../utils/logger');
 const parser = require('../utils/parser');
@@ -78,7 +78,10 @@ class CommandContext {
     const ephemeral = options.ephemeral !== undefined ? options.ephemeral : this.isSlash;
 
     if (this.isSlash) {
-      if (this.interaction.replied || this.interaction.deferred) {
+      if (this.interaction.deferred && !this.interaction.replied) {
+        return this.interaction.editReply({ embeds: [embed] }).catch(() => null);
+      }
+      if (this.interaction.replied) {
         return this.interaction.followUp({ embeds: [embed], ephemeral }).catch(() => null);
       }
       return this.interaction.reply({ embeds: [embed], ephemeral }).catch(() => null);
@@ -101,18 +104,30 @@ class CommandContext {
    * @param {{ephemeral?: boolean}} [options]
    */
   async replyEmbeds(embeds, options = {}) {
-    const list = (embeds || []).slice(0, 10);
-    if (list.length === 0) return null;
-
-    if (this.isSlash) {
-      const payload = { embeds: list, ephemeral: options.ephemeral !== undefined ? options.ephemeral : true };
-      if (this.interaction.replied || this.interaction.deferred) {
-        return this.interaction.followUp(payload).catch(() => null);
+    const groups = [];
+    let current = [];
+    let length = 0;
+    for (const embed of embeds || []) {
+      const size = embedLength(embed);
+      if (current.length && (current.length >= 10 || length + size > 6000)) {
+        groups.push(current);
+        current = [];
+        length = 0;
       }
-      return this.interaction.reply(payload).catch(() => null);
+      current.push(embed);
+      length += size;
     }
-
-    return this.channel.send({ embeds: list }).catch(() => null);
+    if (current.length) groups.push(current);
+    let sent = null;
+    for (const group of groups) {
+      if (this.isSlash) {
+        const payload = { embeds: group };
+        if (this.interaction.deferred && !this.interaction.replied) sent = await this.interaction.editReply(payload);
+        else if (this.interaction.replied) sent = await this.interaction.followUp({ ...payload, ephemeral: options.ephemeral !== false });
+        else sent = await this.interaction.reply({ ...payload, ephemeral: options.ephemeral !== false });
+      } else sent = await this.channel.send({ embeds: group });
+    }
+    return sent;
   }
 
   /** Reply with the standard success embed. */

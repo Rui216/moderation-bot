@@ -86,12 +86,12 @@ async function mute(ctx, target, options) {
       if (muteRole) await target.roles.add(muteRole, auditReason(ctx, options.reason, null));
     },
     punishment: { type: 'mute', expiresAt: Date.now() + durationMs },
-    task: options.temporary ? {
+    task: {
       type: TASK_TYPES.UNMUTE,
       targetId: target.id,
       runAt: Date.now() + durationMs,
-      payload: { moderatorId: ctx.moderator ? ctx.moderator.id : 'system', reason: 'Temporary mute expired', timed: true },
-    } : null,
+      payload: { moderatorId: ctx.moderator ? ctx.moderator.id : 'system', reason: 'Temporary mute expired', timed: true, muteRoleId: muteRole?.id || null },
+    },
     metadata: { duration: durationMs, method: 'timeout', muteRole: muteRole ? muteRole.id : null },
     footer: ctx.guild.name,
   });
@@ -121,8 +121,9 @@ async function unmute(ctx, target, options = {}) {
       if (target.isCommunicationDisabled && target.isCommunicationDisabled()) {
         await target.timeout(null, auditReason(ctx, options.reason, options.caseNumber));
       }
-      if (ctx.config.muteRoleEnabled && ctx.config.mutedRoleId && target.roles.cache.has(ctx.config.mutedRoleId)) {
-        await target.roles.remove(ctx.config.mutedRoleId, auditReason(ctx, options.reason, options.caseNumber)).catch(() => null);
+      const muteRoleId = options.muteRoleId || (ctx.config.muteRoleEnabled ? ctx.config.mutedRoleId : null);
+      if (muteRoleId && target.roles.cache.has(muteRoleId)) {
+        await target.roles.remove(muteRoleId, auditReason(ctx, options.reason, options.caseNumber));
       }
     },
     logEventKey: options.system ? 'punishment_expired' : 'mod_action',
@@ -135,7 +136,7 @@ async function unmute(ctx, target, options = {}) {
     clearedBy: ctx.moderator ? ctx.moderator.id : null,
     reason: options.reason,
   });
-  await repo('tasks').cancel(ctx.guild.id, { type: TASK_TYPES.UNMUTE, targetId: target.id });
+  if (!options.system) await repo('tasks').cancel(ctx.guild.id, { type: TASK_TYPES.UNMUTE, targetId: target.id });
 
   return result;
 }
@@ -236,7 +237,10 @@ async function ban(ctx, target, options) {
 async function unban(ctx, user, options = {}) {
   hierarchyService.assertBotPermissions(ctx.guild, ['BanMembers']);
 
-  const existing = await ctx.guild.bans.fetch(user.id).catch(() => null);
+  const existing = await ctx.guild.bans.fetch(user.id).catch((error) => {
+    if (error.code === 10026) return null;
+    throw error;
+  });
   if (!existing) {
     throw new ValidationError('That user is not currently banned.', { code: 'NOT_BANNED' });
   }
@@ -264,7 +268,7 @@ async function unban(ctx, user, options = {}) {
     clearedBy: ctx.moderator ? ctx.moderator.id : null,
     reason: options.reason,
   });
-  await repo('tasks').cancel(ctx.guild.id, { type: TASK_TYPES.UNBAN, targetId: user.id });
+  if (!options.system) await repo('tasks').cancel(ctx.guild.id, { type: TASK_TYPES.UNBAN, targetId: user.id });
 
   return result;
 }
@@ -462,10 +466,11 @@ async function removeRole(ctx, target, role, options = {}) {
   await repo('punishments').clear(ctx.guild.id, {
     userId: target.id,
     type: 'role',
+    roleId: role.id,
     clearedBy: ctx.moderator.id,
     reason: options.reason,
   });
-  await repo('tasks').cancel(ctx.guild.id, { type: TASK_TYPES.REMOVE_ROLE, targetId: target.id });
+  await repo('tasks').cancel(ctx.guild.id, { type: TASK_TYPES.REMOVE_ROLE, targetId: target.id, roleId: role.id });
 
   return result;
 }
@@ -482,6 +487,7 @@ async function expireTempRole(guild, target, role, meta = {}) {
   await repo('punishments').clear(guild.id, {
     userId: target.id,
     type: 'role',
+    roleId: role.id,
     clearedBy: null,
     reason: 'Temporary role expired',
   });

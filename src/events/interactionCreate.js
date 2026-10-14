@@ -7,6 +7,7 @@
 const dispatcher = require('../core/dispatcher');
 const setupWizard = require('../core/setupWizard');
 const ticketService = require('../services/ticketService');
+const ticketSetupWizard = require('../core/ticketSetupWizard');
 const { errorEmbed } = require('../utils/embeds');
 const { logger } = require('../utils/logger');
 
@@ -20,7 +21,8 @@ function register(client, deps) {
 
 async function handle(client, deps, interaction) {
   try {
-    if (interaction.isButton() || interaction.isAnySelectMenu()) {
+    if (interaction.isButton() || interaction.isAnySelectMenu() || interaction.isModalSubmit()) {
+      if (await ticketSetupWizard.handleComponent(client, interaction)) return;
       const ticketHandled = await ticketService.handleComponent(client, interaction);
       if (ticketHandled) return;
 
@@ -44,8 +46,10 @@ async function handle(client, deps, interaction) {
       message: error && error.message,
     });
 
-    if (interaction.isRepliable() && !interaction.replied && !interaction.deferred) {
-      await interaction.reply({ embeds: [errorEmbed({ title: 'Command Failed' })], ephemeral: true }).catch(() => null);
+    if (interaction.isRepliable()) {
+      const payload = { embeds: [errorEmbed({ title: 'Command Failed' })] };
+      if (interaction.deferred && !interaction.replied) await interaction.editReply(payload).catch(() => null);
+      else if (!interaction.replied) await interaction.reply({ ...payload, ephemeral: true }).catch(() => null);
     }
   }
 }
