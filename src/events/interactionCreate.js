@@ -9,6 +9,7 @@ const { EPHEMERAL } = require('../utils/flags');
 const dispatcher = require('../core/dispatcher');
 const setupWizard = require('../core/setupWizard');
 const ticketService = require('../services/ticketService');
+const appealService = require('../services/appealService');
 const { errorEmbed } = require('../utils/embeds');
 const { logger } = require('../utils/logger');
 
@@ -22,6 +23,12 @@ function register(client, deps) {
 
 async function handle(client, deps, interaction) {
   try {
+    // Ban appeals: these arrive from direct messages too, so they run before the guild-only handlers.
+    if (String(interaction.customId || '').startsWith('appeal:')) {
+      const appealHandled = await appealService.handleInteraction(client, deps, interaction);
+      if (appealHandled) return;
+    }
+
     if (interaction.isButton() || interaction.isAnySelectMenu()) {
       const ticketHandled = await ticketService.handleComponent(client, interaction);
       if (ticketHandled) return;

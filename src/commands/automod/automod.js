@@ -11,7 +11,6 @@
  *   automod links allow|block|remove <domain>
  *   automod invites allow|remove <code>
  *   automod escalation ...                  view or edit the escalation ladder
- *   automod raid ...                        raid protection settings
  *   automod exemption role|channel add|remove <id>
  *   automod strikes <member> | reset <member>
  *
@@ -38,14 +37,13 @@ const RULE_OPTIONS = {
 module.exports = {
   name: 'automod',
   aliases: ['am'],
-  description: 'View and configure automod rules, punishments, escalation, and raid protection.',
+  description: 'View and configure automod rules, punishments, and escalation.',
   usage: 'automod <option> [arguments]',
   examples: [
     'automod',
     'automod rule invites on delete',
     'automod words add badword',
     'automod escalation set 5 mute 2h',
-    'automod raid threshold 10',
   ],
   permission: 'admin',
   action: null,
@@ -93,10 +91,6 @@ module.exports = {
         await manageEscalation(ctx, automod, ctx.args.slice(1));
         return;
 
-      case 'raid':
-        await manageRaid(ctx, automod, ctx.args.slice(1));
-        return;
-
       case 'exemption':
       case 'exempt':
         await manageExemption(ctx, automod, ctx.args.slice(1));
@@ -108,7 +102,7 @@ module.exports = {
 
       default:
         throw new ValidationError(
-          'Unknown option. Use show, enable, disable, rule, set, words, links, invites, escalation, raid, exemption, or strikes.',
+          'Unknown option. Use show, enable, disable, rule, set, words, links, invites, escalation, exemption, or strikes.',
         );
     }
   },
@@ -145,18 +139,12 @@ async function showOverview(ctx, automod) {
     description: [
       `Module: ${automod.enabled ? 'enabled' : 'disabled'}`,
       `Escalation: ${escalation.enabled ? `enabled, ${escalation.windowHours}h window` : 'disabled'}`,
-      `Raid protection: ${automod.raid.enabled ? `enabled, ${automod.raid.threshold} joins in ${automod.raid.windowSeconds}s, action: ${automod.raid.action}` : 'disabled'}`,
       `Exemptions: ${automod.exemptions.roleIds.length} roles, ${automod.exemptions.channelIds.length} channels, staff ${automod.exemptions.ignoreStaff ? 'exempt' : 'filtered'}`,
     ].join('\n'),
     color: COLORS.info,
     fields: [
       ...ruleFields,
       { name: 'Escalation Ladder', value: steps.slice(0, 1024), inline: false },
-      {
-        name: 'Raid Lockdown',
-        value: `Channels: ${automod.raid.lockChannelIds.length || 'all text channels'}\nRoles: ${automod.raid.lockRoleIds.length || '@everyone'}\nAuto unlock: ${automod.raid.autoUnlockMinutes ? `${automod.raid.autoUnlockMinutes} minutes` : 'disabled'}`,
-        inline: false,
-      },
     ],
     footer: `${ctx.guild.name} | automod`,
   }));
@@ -542,153 +530,6 @@ async function manageEscalation(ctx, automod, tokens) {
   }
 
   throw new ValidationError('Usage: automod escalation show|toggle|window <hours>|set <strikes> <action> [duration]|remove <strikes>');
-}
-
-/* ----------------------------------------------------------------------- raid */
-
-async function manageRaid(ctx, automod, tokens) {
-  const action = String(tokens[0] || 'show').toLowerCase();
-  const raid = automod.raid;
-
-  if (action === 'show' || action === 'view') {
-    await ctx.replyEmbed(baseEmbed({
-      title: 'Raid Protection',
-      color: COLORS.info,
-      fields: [
-        { name: 'State', value: raid.enabled ? 'enabled' : 'disabled', inline: true },
-        { name: 'Threshold', value: `${raid.threshold} joins in ${raid.windowSeconds} seconds`, inline: true },
-        { name: 'Action', value: raid.action === 'lockdown' ? 'lock the server' : 'alert staff only', inline: true },
-        { name: 'Minimum Account Age', value: `${raid.minAccountAgeDays} days`, inline: true },
-        { name: 'Auto Unlock', value: raid.autoUnlockMinutes ? `${raid.autoUnlockMinutes} minutes` : 'disabled', inline: true },
-        { name: 'Lockdown Targets', value: `${raid.lockChannelIds.length || 'all text channels'} channels, ${raid.lockRoleIds.length || '@everyone'} roles`, inline: false },
-      ],
-      footer: ctx.guild.name,
-    }));
-    return;
-  }
-
-  if (action === 'enable' || action === 'disable') {
-    await repo('guilds').updateAutomod(ctx.guild.id, { raid: { enabled: action === 'enable' } });
-    await ctx.replyEmbed(successEmbed({
-      title: action === 'enable' ? 'Raid Protection Enabled' : 'Raid Protection Disabled',
-      color: COLORS.success,
-      footer: ctx.guild.name,
-    }));
-    return;
-  }
-
-  if (action === 'threshold') {
-    const value = Number.parseInt(tokens[1], 10);
-    if (!Number.isFinite(value) || value < 2 || value > 200) throw new ValidationError('Threshold must be between 2 and 200 joins.');
-    await repo('guilds').updateAutomod(ctx.guild.id, { raid: { threshold: value } });
-    await ctx.replyEmbed(successEmbed({
-      title: 'Raid Threshold Updated',
-      color: COLORS.success,
-      description: `${value} joins inside ${raid.windowSeconds} seconds triggers raid protection.`,
-      footer: ctx.guild.name,
-    }));
-    return;
-  }
-
-  if (action === 'window') {
-    const value = Number.parseInt(tokens[1], 10);
-    if (!Number.isFinite(value) || value < 5 || value > 600) throw new ValidationError('Window must be between 5 and 600 seconds.');
-    await repo('guilds').updateAutomod(ctx.guild.id, { raid: { windowSeconds: value } });
-    await ctx.replyEmbed(successEmbed({
-      title: 'Raid Window Updated',
-      color: COLORS.success,
-      description: `Joins are counted over ${value} seconds.`,
-      footer: ctx.guild.name,
-    }));
-    return;
-  }
-
-  if (action === 'account-age') {
-    const value = Number.parseInt(tokens[1], 10);
-    if (!Number.isFinite(value) || value < 0 || value > 365) throw new ValidationError('Account age must be between 0 and 365 days.');
-    await repo('guilds').updateAutomod(ctx.guild.id, { raid: { minAccountAgeDays: value } });
-    await ctx.replyEmbed(successEmbed({
-      title: 'Account Age Threshold Updated',
-      color: COLORS.success,
-      description: `Accounts younger than ${value} days are highlighted in raid alerts.`,
-      footer: ctx.guild.name,
-    }));
-    return;
-  }
-
-  if (action === 'action') {
-    const value = String(tokens[1] || '').toLowerCase();
-    if (!['alert', 'lockdown'].includes(value)) throw new ValidationError('Action must be alert or lockdown.');
-    await repo('guilds').updateAutomod(ctx.guild.id, { raid: { action: value } });
-    await ctx.replyEmbed(successEmbed({
-      title: 'Raid Action Updated',
-      color: COLORS.success,
-      description: value === 'lockdown'
-        ? 'The server will be locked down automatically when a raid is detected.'
-        : 'Staff will be alerted; no channels are changed automatically.',
-      footer: ctx.guild.name,
-    }));
-    return;
-  }
-
-  if (action === 'auto-unlock') {
-    const value = Number.parseInt(tokens[1], 10);
-    if (!Number.isFinite(value) || value < 0 || value > 10080) throw new ValidationError('Auto unlock must be between 0 and 10080 minutes. Use 0 to disable.');
-    await repo('guilds').updateAutomod(ctx.guild.id, { raid: { autoUnlockMinutes: value } });
-    await ctx.replyEmbed(successEmbed({
-      title: 'Auto Unlock Updated',
-      color: COLORS.success,
-      description: value === 0 ? 'Automatic unlock disabled.' : `The server unlocks ${value} minutes after an automatic lockdown.`,
-      footer: ctx.guild.name,
-    }));
-    return;
-  }
-
-  if (action === 'channels') {
-    const target = String(tokens[1] || '').toLowerCase();
-    if (target === 'clear') {
-      await repo('guilds').updateAutomod(ctx.guild.id, { raid: { lockChannelIds: [] } });
-      await ctx.replyEmbed(successEmbed({ title: 'Raid Lockdown Channels Cleared', color: COLORS.success, description: 'All text channels will be locked during a raid.', footer: ctx.guild.name }));
-      return;
-    }
-    const channel = await ctx.resolveChannel(tokens[1]);
-    if (!channel) throw new ValidationError('That channel could not be found.');
-    const list = raid.lockChannelIds.includes(channel.id)
-      ? raid.lockChannelIds.filter((id) => id !== channel.id)
-      : [...raid.lockChannelIds, channel.id];
-    await repo('guilds').updateAutomod(ctx.guild.id, { raid: { lockChannelIds: list } });
-    await ctx.replyEmbed(successEmbed({
-      title: 'Raid Lockdown Channels Updated',
-      color: COLORS.success,
-      description: list.length > 0 ? list.map((id) => `<#${id}>`).join(', ') : 'No channels listed; all text channels will be locked.',
-      footer: ctx.guild.name,
-    }));
-    return;
-  }
-
-  if (action === 'roles') {
-    const target = String(tokens[1] || '').toLowerCase();
-    if (target === 'clear') {
-      await repo('guilds').updateAutomod(ctx.guild.id, { raid: { lockRoleIds: [] } });
-      await ctx.replyEmbed(successEmbed({ title: 'Raid Lockdown Roles Cleared', color: COLORS.success, description: 'Only the default role will be denied send permission.', footer: ctx.guild.name }));
-      return;
-    }
-    const role = await ctx.resolveRole(tokens[1]);
-    if (!role) throw new ValidationError('That role could not be found.');
-    const list = raid.lockRoleIds.includes(role.id)
-      ? raid.lockRoleIds.filter((id) => id !== role.id)
-      : [...raid.lockRoleIds, role.id];
-    await repo('guilds').updateAutomod(ctx.guild.id, { raid: { lockRoleIds: list } });
-    await ctx.replyEmbed(successEmbed({
-      title: 'Raid Lockdown Roles Updated',
-      color: COLORS.success,
-      description: list.length > 0 ? list.map((id) => `<@&${id}>`).join(', ') : 'Only the default role will be denied send permission.',
-      footer: ctx.guild.name,
-    }));
-    return;
-  }
-
-  throw new ValidationError('Usage: automod raid show|enable|disable|threshold|window|action|account-age|auto-unlock|channels|roles');
 }
 
 /* ----------------------------------------------------------------- exemptions */

@@ -2,7 +2,7 @@
 
 /**
  * Lift a lockdown. With no channel argument the whole server is unlocked,
- * including channels locked by raid protection.
+ * including every channel locked with lockdown.
  */
 
 const args = require('../../utils/args');

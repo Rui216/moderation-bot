@@ -107,7 +107,6 @@ const ACTIONS = Object.freeze({
   removerole: { title: 'Role Removed', color: COLORS.info, severity: 'Low', durationed: false },
   temprole: { title: 'Temporary Role Added', color: COLORS.info, severity: 'Low', durationed: true },
   automod: { title: 'Automod Action', color: COLORS.logAutomod, severity: 'Medium', durationed: false },
-  raid: { title: 'Raid Protection Triggered', color: COLORS.ban, severity: 'Critical', durationed: false },
   expiry: { title: 'Punishment Expired', color: COLORS.success, severity: 'Info', durationed: false },
 });
 
@@ -330,7 +329,7 @@ const LOG_CHANNEL_SLOTS = Object.freeze({
   joinLeaveLog: { label: 'Join/Leave Log', description: 'Member joins, leaves, nicknames' },
   voiceLog: { label: 'Voice Log', description: 'Voice joins, leaves, moves' },
   serverLog: { label: 'Server Log', description: 'Channels, roles, invites, guild settings' },
-  automodLog: { label: 'Automod Log', description: 'Filtered messages and raid protection alerts' },
+  automodLog: { label: 'Automod Log', description: 'Filtered messages' },
 });
 
 /** Moderator permission levels, from most to least privileged. */
@@ -404,7 +403,6 @@ const CASE_ACTIONS = Object.freeze([
   'removerole',
   'temprole',
   'automod',
-  'raid',
   'expiry',
 ]);
 

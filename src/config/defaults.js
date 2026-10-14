@@ -140,17 +140,6 @@ function defaultAutomodConfig() {
         { strikes: 12, action: 'ban', duration: null },
       ],
     },
-    raid: {
-      enabled: true,
-      threshold: 8,
-      windowSeconds: 30,
-      minAccountAgeDays: 7,
-      // alert | lockdown
-      action: 'alert',
-      autoUnlockMinutes: 30,
-      lockChannelIds: [],
-      lockRoleIds: [],
-    },
   };
 }
 

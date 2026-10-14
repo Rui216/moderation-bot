@@ -1,7 +1,7 @@
 'use strict';
 
 /**
- * Member lifecycle: joins (with account age warning and raid detection),
+ * Member lifecycle: joins (with account age warning),
  * leaves (with kick attribution), nickname changes, and role changes.
  *
  * Nickname locks configured through the nicklock command are enforced here by
@@ -14,7 +14,6 @@ const { cleanText } = require('../utils/sanitize');
 const { humanizeAge } = require('../utils/duration');
 const { repo } = require('../db');
 const loggingService = require('../services/loggingService');
-const raidService = require('../automod/raidService');
 const { logger } = require('../utils/logger');
 
 const log = logger.child('events');
@@ -39,7 +38,6 @@ function register(client, deps) {
 async function handleJoin(client, deps, member) {
   try {
     const guild = member.guild;
-    const config = await repo('guilds').getConfig(guild.id).catch(() => null);
 
     const accountAgeMs = Date.now() - member.user.createdTimestamp;
     const isNewAccount = accountAgeMs < NEW_ACCOUNT_DAYS * 24 * 60 * 60 * 1000;
@@ -56,14 +54,6 @@ async function handleJoin(client, deps, member) {
       thumbnail: member.user.displayAvatarURL({ size: 128 }),
       footer: guild.name,
     });
-
-    // Raid detection uses the automod raid configuration.
-    if (config) {
-      const automod = await repo('guilds').getAutomod(guild.id).catch(() => null);
-      if (automod) {
-        await raidService.recordJoin(member, { config, automod });
-      }
-    }
   } catch (error) {
     log.debug('Member join handling failed', { code: error && error.code });
   }

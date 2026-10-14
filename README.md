@@ -65,7 +65,6 @@ storage behind an authenticated Cloudflare Worker gateway.
 - Excessive caps detection
 - Mass mention detection
 - Emoji spam detection
-- Raid protection: mass-join window with alert or automatic lockdown and optional auto unlock
 - Escalating punishment ladder driven by weighted strikes in a rolling window
 - Per-rule toggle, per-rule punishment, per-rule strike weight
 
@@ -92,8 +91,24 @@ message, and the log states plainly when Discord kept no trace.
 
 An interactive wizard configures the prefix, staff roles, mute role, log channels
 (created automatically or selected), enabled log event types, automod preset, lockdown
-defaults, and the reason and direct message policies. Nothing is saved until the final
-summary is confirmed.
+defaults, ban appeals, and the reason and direct message policies. Nothing is saved until
+the final summary is confirmed. The summary runs the same readiness checks as `doctor`, so
+missing permissions or deleted channels show before you save.
+
+**Ban appeals** (optional, set up in the wizard)
+
+- When the bot bans or temp-bans someone, it DMs the member first, with an **Appeal this ban**
+  button. The notice goes out before the ban, because a banned member shares no server with the
+  bot afterwards.
+- Pressing the button opens a short form. The appeal is posted to the appeals channel with
+  **Approve (unban)** and **Deny** buttons. Moderators and above can use them.
+- Approve lifts the ban through the normal unban pipeline: it creates a case, writes the log
+  entry, and DMs the member. Deny DMs the member. The staff message shows who decided and whether
+  the DM was delivered.
+- Limits: only bans made through the bot can be appealed. Manual bans in Discord cannot. A DM is
+  only delivered if the member accepts direct messages from the bot. Each member can send one
+  appeal per server every 24 hours; that limit is kept in memory and resets when the bot restarts.
+  Denials do not create a case.
 
 **Operations**
 
@@ -169,7 +184,6 @@ moderation-bot/
     ├── automod/
     │   ├── rules.js             Pure rule evaluation
     │   ├── automodService.js    Enforcement, strikes, escalation
-    │   └── raidService.js       Mass-join detection and lockdown
     ├── commands/
     │   ├── moderation/          kick, ban, mute, warn, purge, case, modlog, ...
     │   ├── channels/            purge, slowmode, lockdown, unlock
@@ -177,7 +191,7 @@ moderation-bot/
     │   ├── configuration/       setup, config, prefix, export, syncslash
     │   ├── automod/             automod configuration
     │   ├── logging/             logconfig
-    │   └── utility/             help, ping, whois, serverinfo, stats
+    │   └── utility/             help, ping, whois, serverinfo, roleinfo, channelinfo, doctor, stats
     ├── config/
     │   ├── constants.js         Colours, actions, log event registry, messages
     │   ├── defaults.js          Default guild, automod, and logging documents
@@ -204,6 +218,8 @@ moderation-bot/
     │   ├── hierarchyService.js  Role hierarchy guards
     │   ├── rateLimitService.js  Command and action buckets
     │   ├── dmService.js         Punishment notifications
+    │   ├── appealService.js      Ban appeals: notice, staff review, unban
+    │   ├── readinessService.js  Permission and channel checks for doctor and setup
     │   └── healthService.js     Uptime endpoint
     └── utils/
         ├── embeds.js            The shared embed builder (all styling lives here)
@@ -478,9 +494,12 @@ and only writes at the end.
 10. **Automod preset** - Recommended, Strict, Minimal, or configure later.
 11. **Lockdown defaults** - which roles are denied Send Messages, and the automatic
     unlock delay.
-12. **Behaviour** - whether a reason is required, and whether punished members receive a
+12. **Ban appeals** - optionally send banned members an appeal button, and choose the channel
+    where appeals are reviewed.
+13. **Behaviour** - whether a reason is required, and whether punished members receive a
     direct message.
-13. **Summary** - the full configuration as an embed. Press Save, Back, or Cancel.
+14. **Summary** - the full configuration as an embed, with a readiness section. Press Save,
+    Back, or Cancel.
 
 After saving, the completion embed lists the next steps. Review everything at any time
 with `!config`, and change log routing with `!logconfig` or automod with `!automod`.
@@ -538,7 +557,7 @@ disabled. Run `!help` to see only the commands your roles allow.
 | `config` | show the current configuration | Administrator |
 | `prefix` | `prefix [new prefix or enable/disable]` | Administrator |
 | `logconfig` | `logconfig [list/enable/disable/channel/slot/ignore/unignore] ...` | Administrator |
-| `automod` | `automod [show/enable/disable/rule/set/words/links/invites/escalation/raid/exemption/strikes] ...` | Administrator |
+| `automod` | `automod [show/enable/disable/rule/set/words/links/invites/escalation/exemption/strikes] ...` | Administrator |
 | `export` | `export [amount]` - JSON backup of cases | Administrator |
 | `syncslash` | `syncslash [clear]` - register slash commands | Administrator |
 
@@ -552,7 +571,9 @@ Ticket actions for one server run one at a time, so simultaneous presses get sep
 
 ### Utility
 
-`help [command]`, `ping`, `whois [member]`, `serverinfo`, `stats`, `doctor` (Administrator).
+`help [command]`, `ping`, `whois [member]`, `serverinfo`, `roleinfo <role>` (colour, position,
+notable permissions, member count), `channelinfo [channel]` (type, category, topic, slowmode,
+overrides, and the bot's access), `stats`, `doctor` (Administrator).
 `doctor` is read-only: it reports the bot's connection, its permissions, and which command groups are ready.
 
 Durations accept `30s`, `10m`, `2h`, `3d`, `1w`, and combinations such as `1d 2h`.

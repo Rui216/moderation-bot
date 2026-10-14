@@ -44,12 +44,16 @@ function section(title) {
 /** Records every gateway request so assertions can inspect the payloads. */
 const gatewayCalls = [];
 
+/** Per-test overrides: the guild configuration document and active punishment rows. */
+let guildConfigOverride = null;
+let punishmentRows = [];
+
 /** Canned responder for the gateway transport. */
 function fakeTransport(method, endpoint, options = {}) {
   gatewayCalls.push({ method, endpoint, options });
 
   if (endpoint.endsWith('/config')) {
-    return Promise.resolve({ config: { guildId: '111111111111111111', prefix: '!', prefixEnabled: true, requireReason: true, dmOnPunishment: true } });
+    return Promise.resolve({ config: guildConfigOverride || { guildId: '111111111111111111', prefix: '!', prefixEnabled: true, requireReason: true, dmOnPunishment: true } });
   }
   if (endpoint.endsWith('/cases') && method === 'POST') {
     return Promise.resolve({ case: { caseNumber: 7, action: options.body.action, status: 'active' }, caseNumber: 7 });
@@ -62,7 +66,7 @@ function fakeTransport(method, endpoint, options = {}) {
   if (endpoint.includes('/warnings/count')) return Promise.resolve({ active: 2, total: 3 });
   if (endpoint.includes('/warnings')) return Promise.resolve({ warnings: [] });
   if (endpoint.includes('/tasks')) return Promise.resolve({ tasks: [], cancelled: 0 });
-  if (endpoint.includes('/punishments')) return Promise.resolve({ cleared: 1, punishments: [] });
+  if (endpoint.includes('/punishments')) return Promise.resolve({ cleared: 1, punishments: punishmentRows });
   if (endpoint.includes('/strikes')) return Promise.resolve({ strikes: 3, removed: 3 });
   if (endpoint.includes('/stats')) return Promise.resolve({ stats: { cases: 1, activeWarnings: 1, notes: 0, pendingTasks: 0 } });
   return Promise.resolve({});
@@ -375,13 +379,324 @@ async function main() {
 
   await moderationService.recordSystemAction({
     guild,
-    action: 'raid',
+    action: 'automod',
     moderatorId: 'system',
-    reason: 'Test raid',
+    reason: 'Test automod action',
   });
   const raidCall = gatewayCalls.filter((call) => call.endpoint.endsWith('/cases')).pop();
   check('system actions record a case', Boolean(raidCall));
   check('system action uses the system actor', raidCall && raidCall.options.body.moderatorId === 'system');
+
+  section('Ban appeals');
+
+  const appealService = require(path.join(ROOT, 'src/services/appealService.js'));
+  const punishmentApi = require(path.join(ROOT, 'src/services/punishmentService.js'));
+  const readinessService = require(path.join(ROOT, 'src/services/readinessService.js'));
+  const setupWizard = require(path.join(ROOT, 'src/core/setupWizard.js'));
+
+  const APPEAL_CHANNEL = '777000000000000001';
+  const appealGuild = fakeGuild();
+  const appealConfig = {
+    ...config,
+    dmOnPunishment: false,
+    misc: { nickLocks: {}, appeals: { enabled: true, channelId: APPEAL_CHANNEL } },
+  };
+  guildConfigOverride = appealConfig;
+
+  const banOrder = [];
+  appealGuild.members.ban = (id) => { banOrder.push(`ban:${id}`); appealGuild.bansApplied.push(id); return Promise.resolve(); };
+  appealGuild.channels.cache.set(APPEAL_CHANNEL, {
+    id: APPEAL_CHANNEL,
+    name: 'appeals',
+    isTextBased: () => true,
+    isDMBased: () => false,
+    permissionsFor: () => ({ has: () => true }),
+  });
+
+  const appealMod = fakeMember({ id: '777777777777777777', tag: 'mod#0001', position: 10, guild: appealGuild });
+  appealMod.roles.cache.set('333333333333333333', { id: '333333333333333333' });
+  const appealTarget = fakeMember({ id: '123456789012345678', tag: 'target#0005', position: 1, guild: appealGuild });
+  appealTarget.user.displayAvatarURL = () => 'https://cdn.discordapp.com/embed/avatars/0.png';
+  const sentDms = [];
+  appealTarget.user.send = (payload) => { banOrder.push('dm'); sentDms.push(payload); return Promise.resolve({}); };
+  const plainMemberForAppeal = fakeMember({ id: '888888888888888888', tag: 'member#0002', position: 1, guild: appealGuild });
+
+  const customIdsOf = (components) => components.flatMap((row) => (row.toJSON ? row.toJSON() : row).components.map((c) => c.custom_id));
+  const titleOf = (embed) => (embed && embed.data ? embed.data.title : embed && embed.title);
+  const fieldsOf = (embed) => (embed && embed.data ? embed.data.fields : embed && embed.fields) || [];
+
+  // 1. Notice goes out before the Discord ban call.
+  let banResult = null;
+  banResult = await punishmentApi.ban(
+    fakeContext({ guild: appealGuild, member: appealMod, target: appealTarget, args: [], config: appealConfig }),
+    appealTarget,
+    { reason: 'Spam in direct messages' },
+  );
+  check('appeal notice is sent before the ban is applied', JSON.stringify(banOrder) === JSON.stringify(['dm', `ban:${appealTarget.id}`]), JSON.stringify(banOrder));
+  check('exactly one notice DM is sent', sentDms.length === 1, String(sentDms.length));
+  check('notice carries the appeal button', sentDms.length === 1 && customIdsOf(sentDms[0].components).join() === `appeal:open:${appealGuild.id}`);
+  check('ban result reports the notice as delivered', banResult && banResult.dmDelivered === true, String(banResult && banResult.dmDelivered));
+
+  // 2. With appeals off the ban works and no appeal notice is sent.
+  const offGuild = fakeGuild();
+  const offOrder = [];
+  offGuild.members.ban = (id) => { offOrder.push(`ban:${id}`); return Promise.resolve(); };
+  const offTarget = fakeMember({ id: '123456789012345679', tag: 'off#0006', position: 1, guild: offGuild });
+  offTarget.user.send = () => { offOrder.push('dm'); return Promise.resolve({}); };
+  await punishmentApi.ban(
+    fakeContext({ guild: offGuild, member: appealMod, target: offTarget, args: [], config: { ...config, misc: {} } }),
+    offTarget,
+    { reason: 'Test with appeals off' },
+  );
+  check('no notice when appeals are off', !offOrder.includes('dm') && offOrder.length === 1, JSON.stringify(offOrder));
+
+  // 3. Eligibility: must be banned AND the ban must come from the bot.
+  const appealChannel = {
+    id: APPEAL_CHANNEL,
+    isTextBased: () => true,
+    isDMBased: () => false,
+    send: (payload) => { appealChannel.sent.push(payload); return Promise.resolve({ id: 'appeal-msg' }); },
+    sent: [],
+  };
+  const appealClient = {
+    guilds: { cache: new Collection([[appealGuild.id, appealGuild]]) },
+    channels: { fetch: (id) => Promise.resolve(id === APPEAL_CHANNEL ? appealChannel : null) },
+    users: { fetch: (id) => Promise.resolve(id === appealTarget.id ? appealTarget.user : null) },
+  };
+  appealGuild.bans.fetch = (id) => Promise.resolve(id === appealTarget.id ? { user: appealTarget.user } : null);
+
+  punishmentRows = [{ type: 'ban' }];
+  const eligible = await appealService.checkEligibility(appealClient, appealGuild.id, appealTarget.id);
+  check('bot-issued active ban is eligible', eligible.ok === true, eligible.message);
+
+  punishmentRows = [];
+  const manual = await appealService.checkEligibility(appealClient, appealGuild.id, appealTarget.id);
+  check('manual Discord ban is refused', manual.ok === false && /not issued by the bot/.test(manual.message), manual.message);
+
+  punishmentRows = [{ type: 'ban' }];
+  const notBanned = await appealService.checkEligibility(appealClient, appealGuild.id, '123456789012345690');
+  check('user who is not banned is refused', notBanned.ok === false, notBanned.message);
+
+  // 4. Member presses Appeal in DMs: a modal opens.
+  const interactionFor = (customId, extra = {}) => {
+    const state = { replies: [], messageEdits: [], modal: null };
+    const interaction = {
+      customId,
+      user: appealTarget.user,
+      guild: null,
+      member: null,
+      deferred: false,
+      replied: false,
+      state,
+      isButton: () => false,
+      isModalSubmit: () => false,
+      inGuild: () => false,
+      deferReply: () => { interaction.deferred = true; return Promise.resolve(); },
+      deferUpdate: () => { interaction.deferred = true; return Promise.resolve(); },
+      reply: (payload) => { interaction.replied = true; state.replies.push(payload); return Promise.resolve(); },
+      editReply: (payload) => { state.replies.push(payload); return Promise.resolve(); },
+      showModal: (modal) => { state.modal = modal; return Promise.resolve(); },
+      message: {
+        embeds: [{ title: 'Ban Appeal', fields: [] }],
+        edit: (payload) => { state.messageEdits.push(payload); return Promise.resolve(); },
+      },
+      ...extra,
+    };
+    return interaction;
+  };
+
+  const openInteraction = interactionFor(`appeal:open:${appealGuild.id}`, { isButton: () => true });
+  const consumedOpen = await appealService.handleInteraction(appealClient, { appConfig: appConfig }, openInteraction);
+  check('appeal button is consumed', consumedOpen === true);
+  check('appeal button opens a modal', Boolean(openInteraction.state.modal) && openInteraction.state.modal.toJSON().custom_id === `appeal:submit:${appealGuild.id}`);
+
+  // 5. Modal submitted: the appeal is posted to the staff channel with decision buttons.
+  punishmentRows = [{ type: 'ban' }];
+  const submitInteraction = interactionFor(`appeal:submit:${appealGuild.id}`, {
+    isModalSubmit: () => true,
+    fields: { getTextInputValue: () => 'I was banned by mistake, I did not send that message.' },
+  });
+  await appealService.handleInteraction(appealClient, { appConfig: appConfig }, submitInteraction);
+  check('appeal is posted to the appeals channel', appealChannel.sent.length === 1);
+  const posted = appealChannel.sent[0];
+  check('posted appeal has approve and deny buttons for the member',
+    posted && customIdsOf(posted.components).join() === `appeal:approve:${appealGuild.id}:${appealTarget.id},appeal:deny:${appealGuild.id}:${appealTarget.id}`,
+    posted ? customIdsOf(posted.components).join() : 'none');
+  check('member is told the appeal was sent', titleOf(submitInteraction.state.replies.at(-1).embeds[0]) === 'Appeal Sent');
+
+  // 6. Second submission inside the cooldown is refused.
+  const retry = interactionFor(`appeal:submit:${appealGuild.id}`, {
+    isModalSubmit: () => true,
+    fields: { getTextInputValue: () => 'Please look again at this, it was a mistake.' },
+  });
+  await appealService.handleInteraction(appealClient, { appConfig: appConfig }, retry);
+  check('second appeal inside the cooldown is refused', appealChannel.sent.length === 1 && titleOf(retry.state.replies.at(-1).embeds[0]) === 'Appeal Already Sent');
+
+  // 7. Staff decisions. A plain member cannot decide.
+  const unbanBefore = gatewayCalls.filter((call) => call.endpoint.endsWith('/cases') && call.options.body && call.options.body.action === 'unban').length;
+  const plainApprove = interactionFor(`appeal:approve:${appealGuild.id}:${appealTarget.id}`, {
+    isButton: () => true, inGuild: () => true, guild: appealGuild, member: plainMemberForAppeal,
+  });
+  await appealService.handleInteraction(appealClient, { appConfig: appConfig }, plainApprove);
+  const unbanAfterPlain = gatewayCalls.filter((call) => call.endpoint.endsWith('/cases') && call.options.body && call.options.body.action === 'unban').length;
+  check('a plain member cannot approve an appeal', unbanAfterPlain === unbanBefore && titleOf(plainApprove.state.replies.at(-1).embeds[0]) === 'Not Allowed');
+
+  // Approve as a moderator: unban runs through the normal pipeline.
+  const dmBeforeApprove = sentDms.length;
+  const approve = interactionFor(`appeal:approve:${appealGuild.id}:${appealTarget.id}`, {
+    isButton: () => true, inGuild: () => true, guild: appealGuild, member: appealMod,
+  });
+  await appealService.handleInteraction(appealClient, { appConfig: appConfig }, approve);
+  const unbanAfter = gatewayCalls.filter((call) => call.endpoint.endsWith('/cases') && call.options.body && call.options.body.action === 'unban').length;
+  check('approve records an unban case', unbanAfter === unbanBefore + 1);
+  check('approve DMs the member the result, even with punishment DMs off', sentDms.length === dmBeforeApprove + 1, `${sentDms.length} vs ${dmBeforeApprove}`);
+  const approveEdit = approve.state.messageEdits.at(-1);
+  const decisionField = approveEdit ? fieldsOf(approveEdit.embeds[0]).find((field) => field.name === 'Decision') : null;
+  check('approve updates the staff message with the decision and removes buttons',
+    Boolean(decisionField) && /Approved by mod#0001/.test(decisionField.value) && approveEdit.components.length === 0,
+    decisionField ? decisionField.value : 'no decision');
+
+  // Deny as a moderator: member is DMed, no unban.
+  const unbanBeforeDeny = unbanAfter;
+  const deny = interactionFor(`appeal:deny:${appealGuild.id}:${appealTarget.id}`, {
+    isButton: () => true, inGuild: () => true, guild: appealGuild, member: appealMod,
+  });
+  const dmCountBeforeDeny = sentDms.length;
+  await appealService.handleInteraction(appealClient, { appConfig: appConfig }, deny);
+  const denyEdit = deny.state.messageEdits.at(-1);
+  const denyField = denyEdit ? fieldsOf(denyEdit.embeds[0]).find((field) => field.name === 'Decision') : null;
+  check('deny sends the member a decision DM', sentDms.length === dmCountBeforeDeny + 1, `${sentDms.length} vs ${dmCountBeforeDeny}`);
+  check('deny records the decision and does not unban',
+    Boolean(denyField) && /Denied by mod#0001/.test(denyField.value)
+      && gatewayCalls.filter((call) => call.endpoint.endsWith('/cases') && call.options.body && call.options.body.action === 'unban').length === unbanBeforeDeny);
+
+  // 8. Readiness: appeals on without a channel is a problem.
+  const readinessNoChannel = readinessService.buildChecks({
+    guild: appealGuild,
+    me: appealGuild.members.me,
+    settings: { appealsEnabled: true, appealsChannelId: null },
+  });
+  check('readiness flags appeals with no channel', readinessNoChannel.some((check) => check.label === 'Appeals channel' && check.status === 'fail'));
+
+  // 9. Setup wizard: appeals step, toggle, channel select, summary, save.
+  section('Setup wizard');
+  const wizardSent = [];
+  const wizardChannel = {
+    id: '555555555555555555',
+    send: (payload) => { wizardSent.push(payload); return Promise.resolve({ id: 'wizard-msg' }); },
+    messages: { fetch: () => Promise.resolve(null) },
+  };
+  guildConfigOverride = { ...appealConfig, misc: { nickLocks: {}, tickets: { categoryId: 'cat-1', supportRoleId: 'role-1' }, appeals: { enabled: false, channelId: null } } };
+  const wizardClient = { appConfig: { discord: { defaultPrefix: '!' } } };
+  // Earlier tests cached the guild config; the wizard must read the new document.
+  require(path.join(ROOT, 'src/db')).repo('guilds').invalidate(appealGuild.id);
+  const wizardInteraction = (customId, extra = {}) => ({
+    customId,
+    guild: appealGuild,
+    user: appealMod.user,
+    isButton: () => customId.startsWith('setup:') && !extra.isChannelSelectMenu,
+    isStringSelectMenu: () => false,
+    isChannelSelectMenu: () => Boolean(extra.isChannelSelectMenu),
+    values: extra.values || [],
+    deferUpdate: () => Promise.resolve(),
+    reply: () => Promise.resolve(),
+    deferred: false,
+    replied: false,
+  });
+
+  await setupWizard.start({ client: wizardClient, guild: appealGuild, member: appealMod, channel: wizardChannel, config: guildConfigOverride });
+  const wizard = setupWizard.get(appealGuild.id, appealMod.id);
+  check('wizard has an appeals step after lockdown', setupWizard.STEPS.indexOf('appeals') === setupWizard.STEPS.indexOf('lockdown') + 1);
+  wizard.stepIndex = setupWizard.STEPS.indexOf('appeals');
+  await setupWizard.render(wizard);
+  const appealsScreen = wizardSent.at(-1).embeds[0];
+  check('appeals step footer uses the real step number', titleOf(appealsScreen) === 'Ban Appeals' && appealsScreen.footer.text.includes(`Step ${setupWizard.STEPS.indexOf('appeals') + 1} of ${setupWizard.STEPS.length}`), appealsScreen.footer && appealsScreen.footer.text);
+
+  await setupWizard.handleComponent(wizardClient, wizardInteraction('setup:appeals:toggle'));
+  check('toggle turns appeals on in the session', wizard.data.appealsEnabled === true);
+  await setupWizard.handleComponent(wizardClient, wizardInteraction('setup:appeals:channel', { isChannelSelectMenu: true, values: [APPEAL_CHANNEL] }));
+  check('channel select stores the appeals channel', wizard.data.appealsChannelId === APPEAL_CHANNEL);
+
+  wizard.stepIndex = setupWizard.STEPS.length - 1;
+  await setupWizard.render(wizard);
+  const summary = wizardSent.at(-1).embeds[0];
+  const summaryFields = fieldsOf(summary);
+  check('summary shows appeals and a readiness field', summaryFields.some((f) => f.name === 'Ban Appeals' && /APPEAL/i.test(f.value) === false && f.value.includes(APPEAL_CHANNEL))
+    && summaryFields.some((f) => f.name === 'Readiness'));
+  check('summary footer shows the final step number', summary.footer.text.endsWith(`Step ${setupWizard.STEPS.length} of ${setupWizard.STEPS.length}`), summary.footer.text);
+
+  gatewayCalls.length = 0;
+  await setupWizard.handleComponent(wizardClient, wizardInteraction('setup:save'));
+  const saveCall = gatewayCalls.filter((call) => call.method === 'PUT' && call.endpoint.endsWith('/config')).pop();
+  const savedBody = saveCall ? (saveCall.options.body || saveCall.options) : {};
+  const savedPatch = savedBody.patch || savedBody;
+  check('save writes misc.appeals with the chosen channel', Boolean(savedPatch.misc) && savedPatch.misc.appeals.enabled === true && savedPatch.misc.appeals.channelId === APPEAL_CHANNEL, JSON.stringify(savedPatch.misc));
+  check('save keeps other misc keys (tickets, nickname locks)', Boolean(savedPatch.misc) && savedPatch.misc.tickets && savedPatch.misc.tickets.categoryId === 'cat-1' && savedPatch.misc.nickLocks !== undefined);
+  const automodCall = gatewayCalls.filter((call) => call.endpoint.endsWith('/automod') && call.method !== 'GET').pop();
+  check('save no longer writes a raid block', automodCall ? !JSON.stringify(automodCall.options).includes('"raid"') : true);
+  check('wizard session is closed after save', !setupWizard.get(appealGuild.id, appealMod.id));
+
+  // 10. Utility commands.
+  section('Utility commands');
+  const roleInfoCommand = registry.get('roleinfo');
+  const channelInfoCommand = registry.get('channelinfo');
+  check('roleinfo and channelinfo are registered', Boolean(roleInfoCommand) && Boolean(channelInfoCommand));
+
+  const roleObject = {
+    id: '444555666777888000',
+    name: 'Moderators',
+    position: 5,
+    color: 0x5865f2,
+    hexColor: '#5865f2',
+    hoist: true,
+    mentionable: false,
+    managed: false,
+    editable: true,
+    createdTimestamp: Date.now() - 86400000,
+    permissions: { toArray: () => ['ManageMessages', 'KickMembers', 'ViewChannel', 'SendMessages'] },
+    members: new Collection([['1', {}], ['2', {}]]),
+  };
+  appealGuild.roles.cache.set(roleObject.id, roleObject);
+  appealGuild.roles.fetch = (query) => Promise.resolve(appealGuild.roles.cache.get(query) || null);
+  const roleCtx = fakeContext({ guild: appealGuild, member: appealMod, target: appealTarget, args: [roleObject.id], config });
+  await roleInfoCommand.execute(roleCtx);
+  const roleEmbed = roleCtx.replies[0] && roleCtx.replies[0].embeds[0];
+  const notableField = roleEmbed ? fieldsOf(roleEmbed).find((f) => f.name === 'Notable Permissions') : null;
+  check('roleinfo shows notable permissions and member count', titleOf(roleEmbed) === 'Role: Moderators'
+    && Boolean(notableField) && notableField.value.includes('ManageMessages') && notableField.value.includes('KickMembers')
+    && fieldsOf(roleEmbed).some((f) => f.name === 'Members' && f.value.startsWith('2')));
+
+  const channelObject = {
+    id: '555555555555555001',
+    name: 'general',
+    type: 0,
+    parent: { name: 'Text Channels' },
+    rawPosition: 1,
+    createdTimestamp: Date.now() - 86400000,
+    permissionOverwrites: { cache: new Collection() },
+    nsfw: false,
+    rateLimitPerUser: 10,
+    topic: 'Be kind',
+    isTextBased: () => true,
+    isThread: () => false,
+    permissionsFor: () => ({ has: () => true }),
+  };
+  const channelCtx = fakeContext({ guild: appealGuild, member: appealMod, target: appealTarget, args: [], config: appealConfig });
+  channelCtx.channel = channelObject;
+  await channelInfoCommand.execute(channelCtx);
+  const channelEmbed = channelCtx.replies[0] && channelCtx.replies[0].embeds[0];
+  const slowField = channelEmbed ? fieldsOf(channelEmbed).find((f) => f.name === 'Slowmode') : null;
+  const accessField = channelEmbed ? fieldsOf(channelEmbed).find((f) => f.name === 'Bot Access') : null;
+  check('channelinfo reports slowmode, category, and bot access', titleOf(channelEmbed) === 'Channel: general'
+    && slowField && slowField.value === '10 seconds' && accessField && accessField.value.startsWith('Can view'));
+
+  // Readiness is shared with doctor: the same check returns the same result.
+  const doctorStyle = readinessService.buildChecks({ guild: appealGuild, me: appealGuild.members.me, settings: { appealsEnabled: false } });
+  check('readiness reports appeals as off by default', doctorStyle.some((c) => c.label === 'Ban appeals' && c.status === 'ok'));
+
+  // Restore the default config for the smoke tests.
+  guildConfigOverride = null;
+  punishmentRows = [];
 
   section('Command smoke tests');
 
@@ -408,7 +723,7 @@ async function main() {
     modlog: [target.id],
     purge: ['10', 'cleanup'],
     slowmode: ['5', 'calm down'],
-    lockdown: ['raid'],
+    lockdown: ['Spam wave'],
     unlock: ['resolved'],
     forcenick: [target.id, 'Quiet', 'reason'],
     nicklock: [target.id, 'Quiet', 'reason'],
@@ -425,6 +740,8 @@ async function main() {
     help: [],
     ping: [],
     whois: [],
+    roleinfo: [],
+    channelinfo: [],
     serverinfo: [],
     stats: [],
   };

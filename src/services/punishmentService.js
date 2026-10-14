@@ -19,11 +19,13 @@ const { PermissionFlagsBits } = require('discord.js');
 const { DISCORD_TIMEOUT_MAX_MS, TASK_TYPES, MESSAGES } = require('../config/constants');
 const { ValidationError, ConfigError, DatabaseError } = require('../utils/errors');
 const { formatDuration } = require('../utils/duration');
+const { sanitizeReason } = require('../utils/sanitize');
 const { logger } = require('../utils/logger');
 const { repo } = require('../db');
 
 const moderationService = require('./moderationService');
 const hierarchyService = require('./hierarchyService');
+const appealService = require('./appealService');
 
 const log = logger.child('punishments');
 
@@ -186,6 +188,23 @@ async function ban(ctx, target, options) {
 
   const action = options.softban ? 'softban' : (durationMs ? 'tempban' : 'ban');
 
+  // The appeal notice must be delivered before the ban: a banned member shares
+  // no server with the bot afterwards. Only sent when the reason is valid, so a
+  // refused ban does not leave a notice behind.
+  const reasonText = sanitizeReason(options.reason, { maxLength: 500, fallback: '' });
+  const reasonOk = Boolean(reasonText) || (ctx.config && ctx.config.requireReason === false);
+  let notice = null;
+  if (!options.softban && reasonOk) {
+    if (isMember) hierarchyService.assertCanActOn(ctx.moderator, target);
+    notice = await appealService.sendBanNotice({
+      guild: ctx.guild,
+      config: ctx.config,
+      user: target.user || target,
+      reason: reasonText,
+      durationMs,
+    }).catch(() => null);
+  }
+
   const result = await moderationService.applyAction({
     guild: ctx.guild,
     config: ctx.config,
@@ -197,7 +216,8 @@ async function ban(ctx, target, options) {
     durationMs,
     expiresAt,
     guardTarget: true,
-    dm: !options.softban,
+    // When the appeal notice was sent it already is the member's ban DM.
+    dm: !options.softban && !(notice && notice.offered),
     description: options.softban
       ? 'The member was banned and immediately unbanned to remove their recent messages.'
       : undefined,
@@ -224,6 +244,7 @@ async function ban(ctx, target, options) {
     },
   });
 
+  if (notice && notice.offered) result.dmDelivered = notice.delivered;
   return result;
 }
 

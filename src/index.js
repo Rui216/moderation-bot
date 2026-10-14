@@ -37,7 +37,6 @@ const channelService = require('./services/channelService');
 const moderationService = require('./services/moderationService');
 const dmService = require('./services/dmService');
 const automodService = require('./automod/automodService');
-const raidService = require('./automod/raidService');
 
 const log = logger.child('startup');
 
@@ -64,7 +63,6 @@ function buildServices(appConfig) {
     loggingService,
     dmService,
     automodService,
-    raidService,
     taskService,
     healthService,
     rateLimitService,

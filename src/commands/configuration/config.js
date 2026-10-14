@@ -112,11 +112,17 @@ module.exports = {
           `Module: ${automod.enabled ? 'enabled' : 'disabled'}`,
           ...rules,
           `Escalation: ${automod.escalation && automod.escalation.enabled ? `${automod.escalation.steps.length} steps over ${automod.escalation.windowHours}h` : 'disabled'}`,
-          `Raid protection: ${automod.raid && automod.raid.enabled ? `${automod.raid.threshold} joins / ${automod.raid.windowSeconds}s, action: ${automod.raid.action}` : 'disabled'}`,
         ].join('\n'),
         inline: false,
       });
     }
+
+    const appeals = (ctx.config.misc && ctx.config.misc.appeals) || {};
+    fields.push({
+      name: 'Ban Appeals',
+      value: appeals.enabled && appeals.channelId ? `On, posted to <#${appeals.channelId}>` : 'Off',
+      inline: false,
+    });
 
     fields.push({
       name: 'Stored Records',

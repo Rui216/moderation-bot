@@ -40,6 +40,7 @@ const { sanitizePrefix, clampInt } = require('../utils/sanitize');
 const { logger } = require('../utils/logger');
 const { repo } = require('../db');
 const { defaultAutomodConfig, defaultLoggingConfig } = require('../config/defaults');
+const readinessService = require('../services/readinessService');
 
 const log = logger.child('wizard');
 
@@ -110,9 +111,15 @@ const STEPS = [
   'log_events',
   'automod',
   'lockdown',
+  'appeals',
   'behaviour',
   'summary',
 ];
+
+/** Footer text for a step, numbered from STEPS so it never drifts. */
+function stepFooter(session, step) {
+  return `${session.guild.name} | Step ${STEPS.indexOf(step) + 1} of ${STEPS.length}`;
+}
 
 /** Ordered channel slots visited by the log_slot step. */
 const SLOT_ORDER = ['modLog', 'messageLog', 'joinLeaveLog', 'voiceLog', 'serverLog', 'automodLog'];
@@ -161,6 +168,10 @@ async function start(options) {
       autoUnlockMinutes: (options.config.lockdown && options.config.lockdown.autoUnlockMinutes) || 0,
       requireReason: options.config.requireReason !== false,
       dmOnPunishment: options.config.dmOnPunishment !== false,
+      // Kept whole so the save can write misc back without dropping other keys.
+      misc: { ...(options.config.misc || {}) },
+      appealsEnabled: Boolean(options.config.misc && options.config.misc.appeals && options.config.misc.appeals.enabled),
+      appealsChannelId: (options.config.misc && options.config.misc.appeals && options.config.misc.appeals.channelId) || null,
     },
     awaitingText: null,
     messageId: null,
@@ -261,19 +272,21 @@ function renderStep(session) {
             'This wizard configures moderation for this server. Nothing is saved until you confirm on the final screen.',
             '',
             'Steps:',
-            '1. Command prefix and prefix command availability',
-            '2. Administrator, moderator, and trusted roles',
-            '3. Mute role (optional, uses Discord native timeout by default)',
-            '4. Log channels, created automatically or selected',
-            '5. Which log event types are enabled',
-            '6. Automod rules with a starting preset',
-            '7. Lockdown defaults',
-            '8. Reason requirement and direct message notifications',
+            '- Command prefix and prefix command availability',
+            '- Administrator, moderator, and trusted roles',
+            '- Mute role (optional, uses Discord native timeout by default)',
+            '- Log channels, created automatically or selected',
+            '- Which log event types are enabled',
+            '- Automod rules with a starting preset',
+            '- Lockdown defaults',
+            '- Ban appeals (optional)',
+            '- Reason requirement and direct message notifications',
+            '- Review and save',
             '',
             'You can re-run this wizard at any time, and the config command shows the current settings.',
           ].join('\n'),
           color: COLORS.info,
-          footer: `${session.guild.name} | Step 1 of ${STEPS.length}`,
+          footer: stepFooter(session, 'welcome'),
         }),
         components: [row(
           new ButtonBuilder().setCustomId('setup:next').setLabel('Begin').setStyle(ButtonStyle.Primary),
@@ -293,7 +306,7 @@ function renderStep(session) {
             { name: 'Current', value: `\`${session.data.prefix}\``, inline: true },
             { name: 'Commands Enabled', value: session.data.prefixEnabled ? 'yes' : 'no', inline: true },
           ],
-          footer: `${session.guild.name} | Step 2 of ${STEPS.length}`,
+          footer: stepFooter(session, 'prefix'),
         }),
         components: [row(
           new ButtonBuilder().setCustomId('setup:prefix:change').setLabel('Change Prefix').setStyle(ButtonStyle.Primary),
@@ -315,7 +328,7 @@ function renderStep(session) {
           ].join('\n'),
           color: COLORS.info,
           fields: [{ name: 'Current', value: session.data.prefixEnabled ? 'enabled' : 'disabled', inline: true }],
-          footer: `${session.guild.name} | Step 3 of ${STEPS.length}`,
+          footer: stepFooter(session, 'prefix_toggle'),
         }),
         components: [row(
           new ButtonBuilder()
@@ -349,7 +362,7 @@ function renderStep(session) {
                 : 'No mute role. Native timeouts only.'),
           ].join('\n'),
           color: COLORS.info,
-          footer: `${session.guild.name} | Step 6 of ${STEPS.length}`,
+          footer: stepFooter(session, 'mute_role'),
         }),
         components: [
           row(
@@ -380,7 +393,7 @@ function renderStep(session) {
               ? [{ name: 'Created', value: String(session.data.logAutoCreated), inline: true }]
               : []),
           ],
-          footer: `${session.guild.name} | Step 7 of ${STEPS.length}`,
+          footer: stepFooter(session, 'log_mode'),
         }),
         components: [
           row(
@@ -411,7 +424,7 @@ function renderStep(session) {
             `Slot ${session.data.logSlotIndex + 1} of ${SLOT_ORDER.length}. Use the logconfig command later to route individual events elsewhere.`,
           ].join('\n'),
           color: COLORS.info,
-          footer: `${session.guild.name} | Step 8 of ${STEPS.length}`,
+          footer: stepFooter(session, 'log_slot'),
         }),
         components: [
           row(
@@ -457,7 +470,7 @@ function renderStep(session) {
             value: `${selected.length} of ${Object.keys(LOG_EVENTS).length} event types`,
             inline: true,
           }],
-          footer: `${session.guild.name} | Step 9 of ${STEPS.length}`,
+          footer: stepFooter(session, 'log_events'),
         }),
         components: [
           row(
@@ -489,10 +502,7 @@ function renderStep(session) {
             'Note: there is no flood detection by design. Repeat offenders escalate through strikes instead.',
           ].join('\n'),
           color: COLORS.info,
-          fields: [
-            { name: 'Raid Protection', value: 'Enabled by default: 8 joins in 30 seconds triggers an alert. Set the action to lockdown with the automod command if you want automatic locking.', inline: false },
-          ],
-          footer: `${session.guild.name} | Step 10 of ${STEPS.length}`,
+          footer: stepFooter(session, 'automod'),
         }),
         components: [
           row(
@@ -528,7 +538,7 @@ function renderStep(session) {
               inline: false,
             },
           ],
-          footer: `${session.guild.name} | Step 11 of ${STEPS.length}`,
+          footer: stepFooter(session, 'lockdown'),
         }),
         components: [
           row(
@@ -558,6 +568,51 @@ function renderStep(session) {
         ],
       };
 
+    case 'appeals': {
+      const enabled = session.data.appealsEnabled;
+      const channelId = session.data.appealsChannelId;
+      return {
+        embed: baseEmbed({
+          title: 'Ban Appeals',
+          description: [
+            'When enabled, the bot DMs a member before it bans them, with an Appeal button. The appeal is sent to the channel you choose here, where staff can Approve (lifts the ban and DMs the member) or Deny it.',
+            '',
+            'Only bans made through the bot can be appealed. Manual bans made in Discord are not covered.',
+            'The notice is sent even when DM on punishment is off, because it is the only way to reach a banned member. It cannot be delivered to members who have direct messages closed.',
+            '',
+            channelId ? `Appeals channel: <#${channelId}>` : 'Select a channel below. Appeals stay off until a channel is chosen.',
+          ].join('\n'),
+          color: COLORS.info,
+          fields: [
+            { name: 'Appeals', value: enabled ? (channelId ? 'on' : 'on, but no channel selected yet') : 'off', inline: true },
+            { name: 'Channel', value: channelId ? `<#${channelId}>` : 'not set', inline: true },
+          ],
+          footer: stepFooter(session, 'appeals'),
+        }),
+        components: [
+          row(
+            new ButtonBuilder()
+              .setCustomId('setup:appeals:toggle')
+              .setLabel(enabled ? 'Turn Appeals Off' : 'Turn Appeals On')
+              .setStyle(enabled ? ButtonStyle.Secondary : ButtonStyle.Primary),
+          ),
+          row(
+            new ChannelSelectMenuBuilder()
+              .setCustomId('setup:appeals:channel')
+              .setPlaceholder('Select the appeals channel')
+              .addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement)
+              .setMinValues(1)
+              .setMaxValues(1),
+          ),
+          row(
+            new ButtonBuilder().setCustomId('setup:next').setLabel('Continue').setStyle(ButtonStyle.Success),
+            new ButtonBuilder().setCustomId('setup:back').setLabel('Back').setStyle(ButtonStyle.Secondary),
+            new ButtonBuilder().setCustomId('setup:cancel').setLabel('Cancel').setStyle(ButtonStyle.Danger),
+          ),
+        ],
+      };
+    }
+
     case 'behaviour':
       return {
         embed: baseEmbed({
@@ -572,7 +627,7 @@ function renderStep(session) {
             { name: 'Reason Required', value: session.data.requireReason ? 'yes' : 'no', inline: true },
             { name: 'DM On Punishment', value: session.data.dmOnPunishment ? 'yes' : 'no', inline: true },
           ],
-          footer: `${session.guild.name} | Step 12 of ${STEPS.length}`,
+          footer: stepFooter(session, 'behaviour'),
         }),
         components: [
           row(
@@ -639,6 +694,13 @@ function renderStep(session) {
               inline: false,
             },
             {
+              name: 'Ban Appeals',
+              value: session.data.appealsEnabled && session.data.appealsChannelId
+                ? `On, posted to <#${session.data.appealsChannelId}>`
+                : 'Off',
+              inline: false,
+            },
+            {
               name: 'Behaviour',
               value: [
                 `Reason required: ${session.data.requireReason ? 'yes' : 'no'}`,
@@ -646,8 +708,9 @@ function renderStep(session) {
               ].join('\n'),
               inline: false,
             },
+            { name: 'Readiness', value: summaryReadiness(session), inline: false },
           ],
-          footer: `${session.guild.name} | Step 13 of ${STEPS.length}`,
+          footer: stepFooter(session, 'summary'),
         }),
         components: [row(
           new ButtonBuilder().setCustomId('setup:save').setLabel('Save Configuration').setStyle(ButtonStyle.Success),
@@ -659,6 +722,33 @@ function renderStep(session) {
   }
 }
 
+/**
+ * Readiness lines for the summary. Uses the same checks as /doctor, applied to
+ * the choices in this session, so problems show before anything is saved.
+ */
+function summaryReadiness(session) {
+  const checks = readinessService.buildChecks({
+    guild: session.guild,
+    me: session.guild.members.me || null,
+    settings: {
+      logChannels: session.data.logChannels,
+      muteRoleEnabled: session.data.muteRoleEnabled,
+      mutedRoleId: session.data.mutedRoleId,
+      appealsEnabled: session.data.appealsEnabled,
+      appealsChannelId: session.data.appealsChannelId,
+    },
+  });
+  const counts = readinessService.summarise(checks);
+  const issues = checks
+    .filter((check) => check.status !== 'ok')
+    .map((check) => `${readinessService.marker(check.status)}: ${check.label} - ${check.detail}`);
+
+  return [
+    `${counts.ok} ok, ${counts.warn} warning${counts.warn === 1 ? '' : 's'}, ${counts.fail} problem${counts.fail === 1 ? '' : 's'}`,
+    ...(issues.length > 0 ? issues : ['Everything these settings need is in place.']),
+  ].join('\n').slice(0, 1024);
+}
+
 /** Build the role selection screen for one of the three role steps. */
 function roleStep(session, step) {
   const config = {
@@ -666,19 +756,16 @@ function roleStep(session, step) {
       field: 'adminRoleIds',
       title: 'Administrator Roles',
       description: 'Members with these roles can run configuration commands, view configuration, export logs, and configure automod. They are also treated as moderators.',
-      stepNumber: 4,
     },
     mod_roles: {
       field: 'modRoleIds',
       title: 'Moderator Roles',
       description: 'Members with these roles can run moderation commands: kick, ban, mute, warn, purge, lockdown, and the rest.',
-      stepNumber: 5,
     },
     trusted_roles: {
       field: 'trustedRoleIds',
       title: 'Trusted Roles',
       description: 'Members with these roles can use read-only staff commands such as whois details for others. Choose roles carefully: trusted is above a regular member but below a moderator.',
-      stepNumber: 6,
     },
   }[step];
 
@@ -724,7 +811,7 @@ function roleStep(session, step) {
         value: selected.length > 0 ? selected.map((id) => `<@&${id}>`).join(', ') : 'None',
         inline: false,
       }],
-      footer: `${session.guild.name} | Step ${config.stepNumber} of ${STEPS.length}`,
+      footer: stepFooter(session, step),
     }),
     components: [
       row(
@@ -913,6 +1000,11 @@ async function handleButton(session, group, action, extra) {
       await render(session);
       return;
 
+    case 'appeals':
+      if (action === 'toggle') session.data.appealsEnabled = !session.data.appealsEnabled;
+      await render(session);
+      return;
+
     case 'behaviour':
       if (action === 'reason') session.data.requireReason = !session.data.requireReason;
       if (action === 'dm') session.data.dmOnPunishment = !session.data.dmOnPunishment;
@@ -953,6 +1045,13 @@ async function handleSelect(session, group, interaction) {
 
     case 'lockdown': {
       session.data.lockdownRoleIds = values;
+      await interaction.deferUpdate().catch(() => null);
+      await render(session);
+      return;
+    }
+
+    case 'appeals': {
+      session.data.appealsChannelId = values[0] || null;
       await interaction.deferUpdate().catch(() => null);
       await render(session);
       return;
@@ -1050,8 +1149,17 @@ async function save(session) {
     if (created) logChannels = { ...logChannels, ...created };
   }
 
-  // 3. Guild configuration document.
+  // 3. Guild configuration document. Ban appeals live under misc.appeals; the
+  // rest of misc (tickets, nickname locks) is read fresh so nothing is lost.
+  const appealsChannelId = data.appealsChannelId || null;
+  const currentConfig = await repo('guilds').getConfig(guild.id).catch(() => null);
+  const misc = {
+    ...((currentConfig && currentConfig.misc) || data.misc || {}),
+    appeals: { enabled: Boolean(data.appealsEnabled && appealsChannelId), channelId: appealsChannelId },
+  };
+
   const guildPatch = {
+    misc,
     prefix: data.prefix,
     prefixEnabled: data.prefixEnabled,
     adminRoleIds: data.adminRoleIds,
@@ -1098,7 +1206,6 @@ async function save(session) {
     enabled: automod.enabled,
     rules: automod.rules,
     escalation: automod.escalation,
-    raid: automod.raid,
     exemptions: automod.exemptions,
   });
 
@@ -1122,6 +1229,7 @@ async function save(session) {
         `Mute role: ${muteRoleEnabled && mutedRoleId ? `<@&${mutedRoleId}>` : 'not used'}`,
         `Log event types enabled: ${enabledEvents.length}`,
         `Automod preset: ${presetConfig.label}`,
+        `Ban appeals: ${misc.appeals.enabled ? `on, posted to <#${appealsChannelId}>` : 'off'}`,
       ].join('\n'),
       fields: [
         { name: 'Log Channels', value: configuredChannels.join('\n').slice(0, 1024) || 'None configured', inline: false },
@@ -1131,6 +1239,7 @@ async function save(session) {
             `Use \`${data.prefix}logconfig\` to route individual event types to different channels.`,
             `Use \`${data.prefix}automod\` to tune rules, punishments, and the escalation ladder.`,
             `Use \`${data.prefix}config\` to review the saved configuration at any time.`,
+            `Use \`${data.prefix}doctor\` to confirm the bot has the permissions and channels it needs.`,
           ].join('\n'),
           inline: false,
         },
