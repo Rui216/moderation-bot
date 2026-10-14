@@ -786,16 +786,23 @@ async function handleComponent(client, interaction) {
 
   try {
     if (interaction.isStringSelectMenu() || interaction.isChannelSelectMenu()) {
+      // handleSelect acknowledges each select itself.
       await handleSelect(session, group, interaction);
     } else if (interaction.isButton()) {
+      // Discord requires every button press to be acknowledged within three
+      // seconds. Acknowledge first, then update the wizard message.
+      await interaction.deferUpdate().catch(() => null);
       await handleButton(session, group, action, extra);
     } else {
       await interaction.deferUpdate().catch(() => null);
     }
   } catch (error) {
     log.warn('Wizard interaction failed', { group, code: error && error.code });
-    if (interaction.isRepliable() && !interaction.replied && !interaction.deferred) {
-      await interaction.reply({ embeds: [errorEmbed({ title: 'Setup Error', description: 'That step could not be completed. Try again or restart the wizard with the setup command.' })], ephemeral: true }).catch(() => null);
+    const embed = errorEmbed({ title: 'Setup Error', description: 'That step could not be completed. Try again or restart the wizard with the setup command.' });
+    if (!interaction.replied && !interaction.deferred) {
+      await interaction.reply({ embeds: [embed], ephemeral: true }).catch(() => null);
+    } else {
+      await interaction.followUp({ embeds: [embed], ephemeral: true }).catch(() => null);
     }
   }
 
