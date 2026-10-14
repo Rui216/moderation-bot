@@ -1,5 +1,7 @@
 'use strict';
 
+const { EPHEMERAL } = require('../utils/flags');
+
 /**
  * Interaction routing: setup wizard components first, then slash commands.
  */
@@ -45,7 +47,7 @@ async function handle(client, deps, interaction) {
     });
 
     if (interaction.isRepliable() && !interaction.replied && !interaction.deferred) {
-      await interaction.reply({ embeds: [errorEmbed({ title: 'Command Failed' })], ephemeral: true }).catch(() => null);
+      await interaction.reply({ embeds: [errorEmbed({ title: 'Command Failed' })], flags: EPHEMERAL }).catch(() => null);
     }
   }
 }

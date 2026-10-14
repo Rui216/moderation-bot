@@ -1,5 +1,7 @@
 'use strict';
 
+const { EPHEMERAL } = require('../utils/flags');
+
 /**
  * Command dispatcher.
  *
@@ -263,7 +265,7 @@ async function handleInteraction(deps, interaction) {
 
   if (!interaction.isChatInputCommand()) return;
   if (!interaction.guild) {
-    await interaction.reply({ embeds: [errorEmbed({ title: 'Unavailable', description: 'This bot only works inside a server.' })], ephemeral: true }).catch(() => null);
+    await interaction.reply({ embeds: [errorEmbed({ title: 'Unavailable', description: 'This bot only works inside a server.' })], flags: EPHEMERAL }).catch(() => null);
     return;
   }
 
@@ -275,7 +277,7 @@ async function handleInteraction(deps, interaction) {
     config = await repo('guilds').getConfig(interaction.guild.id);
   } catch (error) {
     log.warn('Configuration could not be loaded for interaction', { guildId: interaction.guild.id, code: error && error.code });
-    await interaction.reply({ embeds: [errorEmbed({ title: 'Command Failed' })], ephemeral: true }).catch(() => null);
+    await interaction.reply({ embeds: [errorEmbed({ title: 'Command Failed' })], flags: EPHEMERAL }).catch(() => null);
     return;
   }
 
@@ -283,7 +285,7 @@ async function handleInteraction(deps, interaction) {
   if (!config.configured && command.name !== 'setup') {
     await interaction.reply({
       embeds: [errorEmbed({ title: 'Setup Required', description: 'This server has not been set up yet. A server administrator needs to run /setup first.' })],
-      ephemeral: true,
+      flags: EPHEMERAL,
     }).catch(() => null);
     return;
   }
@@ -291,7 +293,7 @@ async function handleInteraction(deps, interaction) {
   if (config.slashEnabled === false) {
     await interaction.reply({
       embeds: [errorEmbed({ title: 'Slash Commands Disabled', description: 'Slash commands are turned off in this server. Use the prefix form instead.' })],
-      ephemeral: true,
+      flags: EPHEMERAL,
     }).catch(() => null);
     return;
   }
@@ -301,7 +303,7 @@ async function handleInteraction(deps, interaction) {
     if (command.action) rateLimitService.consume(interaction.guild.id, interaction.user.id, 'action');
   } catch (error) {
     if (error instanceof RateLimitError) {
-      await interaction.reply({ embeds: [errorEmbed({ title: 'Slow Down', description: error.message })], ephemeral: true }).catch(() => null);
+      await interaction.reply({ embeds: [errorEmbed({ title: 'Slow Down', description: error.message })], flags: EPHEMERAL }).catch(() => null);
       return;
     }
     throw error;
@@ -317,7 +319,7 @@ async function handleInteraction(deps, interaction) {
   if (!check.allowed) {
     await interaction.reply({
       embeds: [errorEmbed({ title: 'Command Failed', description: new PermissionError().message })],
-      ephemeral: true,
+      flags: EPHEMERAL,
     }).catch(() => null);
     return;
   }

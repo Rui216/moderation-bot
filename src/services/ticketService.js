@@ -1,5 +1,7 @@
 'use strict';
 
+const { EPHEMERAL } = require('../utils/flags');
+
 /**
  * Support tickets.
  *
@@ -28,6 +30,7 @@ const { baseEmbed, errorEmbed, successEmbed } = require('../utils/embeds');
 const { ValidationError } = require('../utils/errors');
 const { logger } = require('../utils/logger');
 const { repo } = require('../db');
+const { withLock } = require('../utils/keyedLock');
 
 const log = logger.child('tickets');
 
@@ -145,7 +148,7 @@ async function postPanel(guild, channel, config) {
  * @param {string} guildId
  * @param {{categoryId?: string, supportRoleId?: string, logChannelId?: string}} values
  */
-async function saveSetup(guildId, values) {
+async function saveSetupUnlocked(guildId, values) {
   return updateSettings(guildId, (settings) => ({
     ...settings,
     ...(values.categoryId !== undefined ? { categoryId: values.categoryId } : {}),
@@ -160,7 +163,7 @@ async function saveSetup(guildId, values) {
  * Create a ticket channel for the pressing member.
  * @returns {Promise<{channel: object, existing: boolean}>}
  */
-async function openTicket(client, interaction) {
+async function openTicketUnlocked(client, interaction) {
   const guild = interaction.guild;
   const user = interaction.user;
   const config = await repo('guilds').getConfig(guild.id, { force: true });
@@ -252,7 +255,7 @@ async function buildTranscript(channel) {
  * Save the transcript to the log channel, remove the ticket, and delete the channel.
  * @returns {Promise<void>}
  */
-async function closeTicket({ client, guild, channel, closedBy }) {
+async function closeTicketUnlocked({ client, guild, channel, closedBy }) {
   const config = await repo('guilds').getConfig(guild.id, { force: true });
   const settings = readSettings(config.misc);
   const ticket = settings.open[channel.id];
@@ -293,6 +296,29 @@ async function closeTicket({ client, guild, channel, closedBy }) {
   log.info('Ticket closed', { guildId: guild.id, number: ticket.number });
 }
 
+/* ------------------------------------------------------------------ queue */
+
+/**
+ * Ticket actions for one server run one at a time. Two members pressing Open
+ * Ticket at the same moment therefore get separate numbers and never both
+ * create a channel for the same person.
+ */
+function ticketLock(guildId) {
+  return `tickets:${guildId}`;
+}
+
+function openTicket(client, interaction) {
+  return withLock(ticketLock(interaction.guild.id), () => openTicketUnlocked(client, interaction));
+}
+
+function closeTicket(options) {
+  return withLock(ticketLock(options.guild.id), () => closeTicketUnlocked(options));
+}
+
+function saveSetup(guildId, values) {
+  return withLock(ticketLock(guildId), () => saveSetupUnlocked(guildId, values));
+}
+
 /* -------------------------------------------------------- component routing */
 
 /**
@@ -306,7 +332,7 @@ async function handleComponent(client, interaction) {
 
   try {
     if (interaction.customId === 'ticket:open') {
-      await interaction.deferReply({ ephemeral: true });
+      await interaction.deferReply({ flags: EPHEMERAL });
       const { channel, existing } = await openTicket(client, interaction);
       await interaction.editReply({
         embeds: [existing
@@ -321,17 +347,17 @@ async function handleComponent(client, interaction) {
       const settings = readSettings(config.misc);
       const ticket = settings.open[interaction.channelId];
       if (!ticket) {
-        await interaction.reply({ embeds: [errorEmbed({ title: 'Not A Ticket', description: 'This channel is not an open ticket.' })], ephemeral: true });
+        await interaction.reply({ embeds: [errorEmbed({ title: 'Not A Ticket', description: 'This channel is not an open ticket.' })], flags: EPHEMERAL });
         return true;
       }
       if (!canManageTicket(interaction.member, ticket, settings)) {
-        await interaction.reply({ embeds: [errorEmbed({ title: 'Not Allowed', description: 'Only the ticket owner or staff can close this ticket.' })], ephemeral: true });
+        await interaction.reply({ embeds: [errorEmbed({ title: 'Not Allowed', description: 'Only the ticket owner or staff can close this ticket.' })], flags: EPHEMERAL });
         return true;
       }
       await interaction.reply({
         embeds: [baseEmbed({ title: 'Close This Ticket?', color: COLORS.warn, description: 'The channel will be deleted. A transcript is saved to the log channel first.' })],
         components: [confirmButtonRow()],
-        ephemeral: true,
+        flags: EPHEMERAL,
       });
       return true;
     }
@@ -359,7 +385,7 @@ async function handleComponent(client, interaction) {
     if (interaction.deferred || interaction.replied) {
       await interaction.editReply({ embeds: [embed] }).catch(() => null);
     } else {
-      await interaction.reply({ embeds: [embed], ephemeral: true }).catch(() => null);
+      await interaction.reply({ embeds: [embed], flags: EPHEMERAL }).catch(() => null);
     }
     return true;
   }

@@ -1,5 +1,7 @@
 'use strict';
 
+const { EPHEMERAL } = require('../utils/flags');
+
 /**
  * Command context.
  *
@@ -79,9 +81,9 @@ class CommandContext {
 
     if (this.isSlash) {
       if (this.interaction.replied || this.interaction.deferred) {
-        return this.interaction.followUp({ embeds: [embed], ephemeral }).catch(() => null);
+        return this.interaction.followUp({ embeds: [embed], flags: ephemeral ? EPHEMERAL : 0 }).catch(() => null);
       }
-      return this.interaction.reply({ embeds: [embed], ephemeral }).catch(() => null);
+      return this.interaction.reply({ embeds: [embed], flags: ephemeral ? EPHEMERAL : 0 }).catch(() => null);
     }
 
     const sent = await this.channel.send({ embeds: [embed] }).catch((error) => {
@@ -105,7 +107,7 @@ class CommandContext {
     if (list.length === 0) return null;
 
     if (this.isSlash) {
-      const payload = { embeds: list, ephemeral: options.ephemeral !== undefined ? options.ephemeral : true };
+      const payload = { embeds: list, flags: (options.ephemeral !== undefined ? options.ephemeral : true) ? EPHEMERAL : 0 };
       if (this.interaction.replied || this.interaction.deferred) {
         return this.interaction.followUp(payload).catch(() => null);
       }
@@ -154,7 +156,7 @@ class CommandContext {
   async acknowledge() {
     if (!this.isSlash) return;
     if (this.interaction.deferred || this.interaction.replied) return;
-    await this.interaction.deferReply({ ephemeral: true }).catch(() => null);
+    await this.interaction.deferReply({ flags: EPHEMERAL }).catch(() => null);
   }
 
   /* -------------------------------------------------------------- resolvers */

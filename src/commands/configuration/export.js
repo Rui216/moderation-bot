@@ -1,5 +1,7 @@
 'use strict';
 
+const { EPHEMERAL } = require('../../utils/flags');
+
 /**
  * Export the moderation log as a JSON attachment for archival or external
  * review. Admin only, and bounded in size so the bot cannot be asked to build
@@ -88,7 +90,7 @@ module.exports = {
     if (!ctx.isSlash) {
       await ctx.channel.send({ files: [attachment] }).catch(() => null);
     } else {
-      await ctx.interaction.followUp({ files: [attachment], ephemeral: true }).catch(() => null);
+      await ctx.interaction.followUp({ files: [attachment], flags: EPHEMERAL }).catch(() => null);
     }
   },
 };

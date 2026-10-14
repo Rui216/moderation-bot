@@ -1,5 +1,7 @@
 'use strict';
 
+const { EPHEMERAL } = require('../utils/flags');
+
 /**
  * Interactive setup wizard.
  *
@@ -777,7 +779,7 @@ async function handleComponent(client, interaction) {
 
   // Only the member who started the wizard may drive it.
   if (session.member.id !== interaction.user.id) {
-    await interaction.reply({ embeds: [errorEmbed({ title: 'Setup In Progress', description: 'Another administrator is running the setup wizard in this server.' })], ephemeral: true }).catch(() => null);
+    await interaction.reply({ embeds: [errorEmbed({ title: 'Setup In Progress', description: 'Another administrator is running the setup wizard in this server.' })], flags: EPHEMERAL }).catch(() => null);
     return true;
   }
 
@@ -800,9 +802,9 @@ async function handleComponent(client, interaction) {
     log.warn('Wizard interaction failed', { group, code: error && error.code });
     const embed = errorEmbed({ title: 'Setup Error', description: 'That step could not be completed. Try again or restart the wizard with the setup command.' });
     if (!interaction.replied && !interaction.deferred) {
-      await interaction.reply({ embeds: [embed], ephemeral: true }).catch(() => null);
+      await interaction.reply({ embeds: [embed], flags: EPHEMERAL }).catch(() => null);
     } else {
-      await interaction.followUp({ embeds: [embed], ephemeral: true }).catch(() => null);
+      await interaction.followUp({ embeds: [embed], flags: EPHEMERAL }).catch(() => null);
     }
   }
 

@@ -453,8 +453,12 @@ startup and the health endpoint will report `degraded`.
 ## Running the setup wizard
 
 ```
-!setup
+/setup
 ```
+
+Only server administrators (Discord's Administrator permission), the server owner, or bot owners
+can run setup. Until setup is finished, every other command replies that the server has not been
+set up yet. The bot's welcome message explains this when it joins.
 
 The wizard is re-runnable and non-destructive: it starts from the current configuration
 and only writes at the end.
@@ -538,9 +542,18 @@ disabled. Run `!help` to see only the commands your roles allow.
 | `export` | `export [amount]` - JSON backup of cases | Administrator |
 | `syncslash` | `syncslash [clear]` - register slash commands | Administrator |
 
+### Tickets
+
+- `ticketpanel [channel]` (Administrator): post the Open Ticket button.
+- `ticketsetup [category] [support role] [log channel]` (Administrator): configure tickets. Run with no arguments to see the current settings.
+- `ticketclose` (anyone in a ticket, if they are the opener or staff): close the ticket and save a transcript.
+
+Ticket actions for one server run one at a time, so simultaneous presses get separate numbers.
+
 ### Utility
 
-`help [command]`, `ping`, `whois [member]`, `serverinfo`, `stats` (Administrator).
+`help [command]`, `ping`, `whois [member]`, `serverinfo`, `stats`, `doctor` (Administrator).
+`doctor` is read-only: it reports the bot's connection, its permissions, and which command groups are ready.
 
 Durations accept `30s`, `10m`, `2h`, `3d`, `1w`, and combinations such as `1d 2h`.
 

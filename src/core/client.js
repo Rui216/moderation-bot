@@ -138,7 +138,7 @@ async function applyPresence(client, appConfig) {
  * @param {Client} client
  */
 function attachLifecycle(client) {
-  client.on('ready', () => {
+  client.on('clientReady', () => {
     healthService.update({
       ready: true,
       guildCount: client.guilds.cache.size,
