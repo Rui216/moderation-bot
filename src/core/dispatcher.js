@@ -185,6 +185,16 @@ async function handleMessage(deps, message) {
 }
 
 /**
+ * Read the snowflake from a slash option. The value is the id string for user,
+ * channel, and role options; the resolved object is used as a fallback.
+ */
+function snowflakeOf(option) {
+  if (typeof option.value === 'string' && /^\d{17,20}$/.test(option.value)) return option.value;
+  const resolved = option.user || (option.member && option.member.user) || option.channel || option.role;
+  return resolved && resolved.id ? resolved.id : String(option.value);
+}
+
+/**
  * Build the argument vector for a slash invocation.
  *
  * Prefix commands are the primary interface. Slash support is an optional
@@ -207,17 +217,19 @@ function buildSlashArgs(command, interaction) {
     }
 
     switch (option.type) {
+      // Discord puts the snowflake in option.value for these types; the
+      // resolved object (user, channel, role) is only a convenience.
       case 'user':
-        args.push(`<@${value.id}>`);
+        args.push(`<@${snowflakeOf(value)}>`);
         break;
       case 'member':
-        args.push(`<@${value.id}>`);
+        args.push(`<@${snowflakeOf(value)}>`);
         break;
       case 'channel':
-        args.push(`<#${value.id}>`);
+        args.push(`<#${snowflakeOf(value)}>`);
         break;
       case 'role':
-        args.push(`<@&${value.id}>`);
+        args.push(`<@&${snowflakeOf(value)}>`);
         break;
       case 'boolean':
         args.push(value.value ? 'true' : 'false');
