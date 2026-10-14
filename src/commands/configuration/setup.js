@@ -25,6 +25,19 @@ module.exports = {
   slashOptions: [],
 
   async execute(ctx) {
+    // Setup decides who the staff are, so it checks Discord permissions directly
+    // rather than the configured admin roles, which may not exist yet.
+    const isAdministrator = Boolean(ctx.member && ctx.member.permissions && ctx.member.permissions.has('Administrator'));
+    const isOwner = ctx.guild.ownerId === ctx.author.id;
+    const isBotOwner = (ctx.appConfig.discord.ownerIds || []).includes(ctx.author.id);
+    if (!isAdministrator && !isOwner && !isBotOwner) {
+      await ctx.replyEmbed(errorEmbed({
+        title: 'Administrators Only',
+        description: 'Only server administrators can run setup.',
+      }));
+      return;
+    }
+
     // The wizard needs permission to create roles and channels if the
     // administrator chooses those options.
     const me = ctx.guild.members.me;

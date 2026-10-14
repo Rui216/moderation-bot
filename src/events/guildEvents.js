@@ -53,7 +53,7 @@ async function handleCreate(client, deps, guild) {
         title: 'Moderation Bot Ready',
         color: COLORS.info,
         description: [
-          `Thanks for adding the bot. Run \`${prefix}setup\` to configure moderation for this server.`,
+          'Thanks for adding the bot. A server administrator must run `/setup` before any other command works.',
           '',
           'The wizard walks through the command prefix, staff roles, log channels, automod, and lockdown defaults.',
           `Use \`${prefix}help\` to see the commands available to you.`,

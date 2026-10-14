@@ -131,6 +131,14 @@ async function handleMessage(deps, message) {
 
   if (command.guildOnly === false && !message.guild) return false;
 
+  // Until setup has been completed, only the setup command runs.
+  if (!config.configured && command.name !== 'setup') {
+    await message.reply({
+      embeds: [errorEmbed({ title: 'Setup Required', description: 'This server has not been set up yet. A server administrator needs to run /setup first.' })],
+    }).catch(() => null);
+    return true;
+  }
+
   // Rate limiting happens before permissions so a flood cannot probe the
   // permission layer, and before any database or API work.
   try {
@@ -268,6 +276,15 @@ async function handleInteraction(deps, interaction) {
   } catch (error) {
     log.warn('Configuration could not be loaded for interaction', { guildId: interaction.guild.id, code: error && error.code });
     await interaction.reply({ embeds: [errorEmbed({ title: 'Command Failed' })], ephemeral: true }).catch(() => null);
+    return;
+  }
+
+  // Until setup has been completed, only the setup command runs.
+  if (!config.configured && command.name !== 'setup') {
+    await interaction.reply({
+      embeds: [errorEmbed({ title: 'Setup Required', description: 'This server has not been set up yet. A server administrator needs to run /setup first.' })],
+      ephemeral: true,
+    }).catch(() => null);
     return;
   }
 
