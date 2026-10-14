@@ -86,7 +86,9 @@ function parseInvocation(message, prefix) {
  * @returns {Promise<boolean>} true when the message was handled as a command
  */
 async function handleMessage(deps, message) {
-  const { client, appConfig } = deps;
+  const { appConfig } = deps;
+  // The message always carries its client, so use it when deps does not.
+  const client = deps.client || message.client;
 
   if (!message.guild) return false;
   if (message.author.bot) return false;
