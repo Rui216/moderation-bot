@@ -20,7 +20,8 @@
     "db:schema:remote": "cd cloudflare/worker && npx wrangler d1 execute moderation --remote --file=../schema.sql",
     "worker:dev": "cd cloudflare/worker && npx wrangler dev",
     "worker:logs": "cd cloudflare/worker && npx wrangler tail",
-    "test:integration": "node scripts/integration-test.js"
+    "test:integration": "node scripts/integration-test.js",
+    "test:tickets": "node scripts/ticket-flow-test.js"
   },
   "dependencies": {
     "discord.js": "^14.27.0",

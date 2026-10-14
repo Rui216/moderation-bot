@@ -28,8 +28,8 @@ function buildDefaultLogEvents() {
 function defaultGuildConfig() {
   return {
     prefix: null, // null -> fall back to DEFAULT_PREFIX from the environment
-    prefixEnabled: true,
-    slashEnabled: false,
+    prefixEnabled: false,
+    slashEnabled: true,
 
     // Authorization
     modRoleIds: [],

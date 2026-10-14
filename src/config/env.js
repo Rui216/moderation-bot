@@ -84,7 +84,7 @@ function buildConfig() {
     discord: {
       token: discordToken,
       defaultPrefix: optionalString('DEFAULT_PREFIX', '!').slice(0, 5) || '!',
-      enableSlashCommands: bool('ENABLE_SLASH_COMMANDS', false),
+      enableSlashCommands: bool('ENABLE_SLASH_COMMANDS', true),
       slashDevGuildId: optionalString('SLASH_DEV_GUILD_ID') || null,
       ownerIds: idList('BOT_OWNER_IDS'),
       activity: {

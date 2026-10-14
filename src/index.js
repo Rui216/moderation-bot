@@ -140,6 +140,16 @@ async function main() {
   }, 5 * 60 * 1000);
   if (heartbeatTimer.unref) heartbeatTimer.unref();
 
+  if (appConfig.discord.enableSlashCommands) {
+    try {
+      const { registerAll } = require('./core/slashRegistrar');
+      await registerAll(client, appConfig);
+    } catch (error) {
+      // Logged without the token or the raw response body.
+      log.warn('Slash command registration failed', { code: error && error.code, message: error && error.message });
+    }
+  }
+
   log.info('Bot ready', {
     user: client.user ? client.user.tag : 'unknown',
     guilds: client.guilds.cache.size,

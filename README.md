@@ -3,7 +3,7 @@
 A production-ready Discord moderation bot built on discord.js v14 with Cloudflare D1
 storage behind an authenticated Cloudflare Worker gateway.
 
-- Prefix commands are the primary interface and work standalone. Slash commands are an
+- Slash commands are the default interface and work in every server. Prefix commands are an
   optional hybrid mode.
 - Every reply, log entry, wizard screen, and error message is an embed built from one
   shared utility, with a consistent colour language and case numbering.
@@ -48,6 +48,14 @@ storage behind an authenticated Cloudflare Worker gateway.
 - Role hierarchy is enforced everywhere: nobody can act on someone at or above them, the
   server owner is protected, and the bot refuses actions above its own highest role.
 - Optional reason requirement, optional evidence URL, optional direct message notification.
+
+**Tickets**
+
+- `ticketpanel` posts a message with an Open Ticket button. Each press creates a private channel
+  that only the member, the support role, and the bot can see.
+- `ticketsetup #category @support #log-channel` sets the category, support role, and transcript log.
+- Closing a ticket (button or `ticketclose`) saves a plain-text transcript to the log channel,
+  then deletes the channel. One open ticket per member.
 
 **Automod**
 
@@ -285,8 +293,8 @@ Copy `.env.example` to `.env`. Never commit `.env`; it is already gitignored.
 | --- | --- | --- | --- |
 | `DISCORD_TOKEN` | yes | - | Bot token from the Developer Portal |
 | `DEFAULT_PREFIX` | no | `!` | Prefix for guilds that have not chosen one |
-| `ENABLE_SLASH_COMMANDS` | no | `false` | Enables the optional slash hybrid mode |
-| `SLASH_DEV_GUILD_ID` | no | - | Preferred guild for instant slash registration |
+| `ENABLE_SLASH_COMMANDS` | no | `true` | Registers slash commands globally at startup (up to an hour to appear the first time) |
+| `SLASH_DEV_GUILD_ID` | no | - | Also register slash commands to this guild, where they appear instantly |
 | `BOT_OWNER_IDS` | no | - | Comma-separated user ids that bypass permission checks |
 | `BOT_ACTIVITY` / `BOT_ACTIVITY_TYPE` | no | `Server moderation` / `WATCHING` | Presence |
 | `WORKER_BASE_URL` | yes | - | Gateway base URL, for example `https://moderation-gateway.<subdomain>.workers.dev` |
@@ -540,10 +548,10 @@ Durations accept `30s`, `10m`, `2h`, `3d`, `1w`, and combinations such as `1d 2h
 
 ## Design decisions
 
-**Prefix first, slash optional.** Prefix commands are the primary interface because they
-work everywhere with no registration delay and no command-limit constraints, and they can
-be disabled per guild. Slash commands are registered per guild and appear instantly, while
-global registration can take up to an hour to propagate. Slash support maps options onto
+**Slash first, prefix optional.** Slash commands are published globally at startup, so every
+server the bot joins gets them. Global registration can take up to an hour to appear the first
+time. Prefix commands are off by default; a server can turn them on in the setup wizard or
+with `prefix`. Prefix commands keep working standalone with no registration step. Slash support maps options onto
 the same positional arguments the prefix form uses, so behaviour is identical and there is
 no second code path. The trade-offs are real: slash commands give native autocomplete and
 option validation, while prefix commands support quoting, flexible ordering, and arguments

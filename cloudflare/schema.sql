@@ -30,8 +30,8 @@ CREATE TABLE IF NOT EXISTS guilds (
 
   -- Command handling
   prefix              TEXT,                       -- NULL means "use DEFAULT_PREFIX from the bot environment"
-  prefix_enabled      INTEGER NOT NULL DEFAULT 1,
-  slash_enabled       INTEGER NOT NULL DEFAULT 0,
+  prefix_enabled      INTEGER NOT NULL DEFAULT 0,
+  slash_enabled       INTEGER NOT NULL DEFAULT 1,
 
   -- Authorization role lists (JSON arrays of snowflake strings)
   mod_role_ids        TEXT NOT NULL DEFAULT '[]',

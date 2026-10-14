@@ -9,50 +9,16 @@
  * the wizard and this command default to a single guild.
  */
 
-const {
-  SlashCommandBuilder,
-  Routes,
-} = require('discord.js');
+const { Routes } = require('discord.js');
 
 const { COLORS } = require('../../config/constants');
 const { baseEmbed, errorEmbed, successEmbed } = require('../../utils/embeds');
 const { logger } = require('../../utils/logger');
-const registry = require('../../core/registry');
-const registryModel = registry;
+const registryModel = require('../../core/registry');
+const { applyOptions } = require('../../core/slashRegistrar');
+const { SlashCommandBuilder } = require('discord.js');
 
 const log = logger.child('command');
-
-/** Map the textual option types used in command definitions to builders. */
-function applyOptions(builder, options) {
-  for (const option of options || []) {
-    const required = option.required !== false;
-    const description = (option.description || option.name).slice(0, 100);
-
-    switch (option.type) {
-      case 'user':
-        builder.addUserOption((o) => o.setName(option.name).setDescription(description).setRequired(required));
-        break;
-      case 'member':
-        builder.addUserOption((o) => o.setName(option.name).setDescription(description).setRequired(required));
-        break;
-      case 'channel':
-        builder.addChannelOption((o) => o.setName(option.name).setDescription(description).setRequired(required));
-        break;
-      case 'role':
-        builder.addRoleOption((o) => o.setName(option.name).setDescription(description).setRequired(required));
-        break;
-      case 'integer':
-        builder.addIntegerOption((o) => o.setName(option.name).setDescription(description).setRequired(required));
-        break;
-      case 'boolean':
-        builder.addBooleanOption((o) => o.setName(option.name).setDescription(description).setRequired(required));
-        break;
-      default:
-        builder.addStringOption((o) => o.setName(option.name).setDescription(description).setRequired(required));
-    }
-  }
-  return builder;
-}
 
 module.exports = {
   name: 'syncslash',

@@ -6,6 +6,7 @@
 
 const dispatcher = require('../core/dispatcher');
 const setupWizard = require('../core/setupWizard');
+const ticketService = require('../services/ticketService');
 const { errorEmbed } = require('../utils/embeds');
 const { logger } = require('../utils/logger');
 
@@ -20,6 +21,9 @@ function register(client, deps) {
 async function handle(client, deps, interaction) {
   try {
     if (interaction.isButton() || interaction.isAnySelectMenu()) {
+      const ticketHandled = await ticketService.handleComponent(client, interaction);
+      if (ticketHandled) return;
+
       const consumed = await setupWizard.handleComponent(client, interaction);
       if (consumed) return;
     }
